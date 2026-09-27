@@ -8,7 +8,7 @@ package mkq
 // runtime/debug.ReadBuildInfo so it stays meaningful in unit tests
 // and in users who vendor mkq via tooling that doesn't preserve
 // build info. Bump it on every release.
-const Version = "1.3.0"
+const Version = "1.4.0"
 
 // versionTag is the value written to meta.version. BullMQ TS writes
 // `bullmq:<semver>`; mkq mirrors the convention with a `mkq:` prefix
