@@ -1,6 +1,10 @@
 package mkq
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+	"time"
+)
 
 // ErrPriorityWithDelay is returned by Queue.Add when both WithPriority
 // and WithDelay are supplied. BullMQ stores the priority in the HASH
@@ -82,3 +86,40 @@ var ErrJobNotInExpectedState = errors.New("mkq: job is not in the expected sourc
 // usable regardless (the lua atomically enforces no-duplicate-job
 // regardless of whether mkq surfaces the sentinel).
 var ErrDuplicateJob = errors.New("mkq: job suppressed by deduplication; existing job returned")
+
+// DelayedError, when returned (or wrapped) by a handler, moves the job
+// back to the delayed set for Delay without consuming an attempt. The
+// job keeps its ID and history, and is dispatched again once the delay
+// elapses, with the same number of attempts left as before.
+//
+// Use it when the job itself is fine but now is the wrong time to run
+// it — the downstream it talks to is known to be down, or asked to be
+// left alone for a while — so that waiting does not eat into the retry
+// budget meant for real failures.
+//
+//	if breakerOpen(host) {
+//		return nil, fmt.Errorf("%s is down: %w", host, mkq.Delay(time.Until(nextProbe)))
+//	}
+//
+// This mirrors BullMQ's DelayedError, which a JS handler throws after
+// job.moveToDelayed: the transition is the same moveToDelayed script
+// with its skip-attempt flag set, so nothing changes on the wire.
+//
+// A Delay of zero or less makes the job eligible again right away; it
+// still goes through the delayed set and is never counted as a failure.
+//
+// If an error wraps both a DelayedError and ErrUnrecoverable, the delay
+// wins: the job is put back rather than failed.
+type DelayedError struct {
+	Delay time.Duration
+}
+
+func (e *DelayedError) Error() string {
+	return fmt.Sprintf("mkq: job delayed for %s", e.Delay)
+}
+
+// Delay returns a *DelayedError asking the worker to put the job back
+// for d without consuming an attempt. See DelayedError.
+func Delay(d time.Duration) error {
+	return &DelayedError{Delay: d}
+}
