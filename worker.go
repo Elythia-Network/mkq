@@ -29,7 +29,10 @@ import (
 // A non-nil error transitions the job to retry or failed depending on
 // the job's WithAttempts / WithBackoff configuration. Wrapping the
 // returned error with ErrUnrecoverable forces the failed transition
-// regardless of remaining attempts.
+// regardless of remaining attempts. Returning (or wrapping) a
+// DelayedError instead puts the job back in delayed without consuming an
+// attempt; it takes precedence over ErrUnrecoverable when both are
+// wrapped.
 //
 // Notes mirroring BullMQ behaviour:
 //   - Panics inside the handler are recovered, recorded in the
@@ -1117,16 +1120,19 @@ func asString(v any) string {
 // the BullMQ HASH `atm` (attempts made) counter atomically inside
 // the script.
 //
-// finaliseStatus distinguishes the four post-finalise states the
+// finaliseStatus distinguishes the five post-finalise states the
 // caller cares about for observability. completed/failed are terminal;
 // retrying means the job got handed back to delayed/wait for another
-// attempt; finaliseError means the script call itself failed.
+// attempt; delayed means the handler asked to be run later (DelayedError)
+// without consuming an attempt; finaliseError means the script call
+// itself failed.
 type finaliseStatus int
 
 const (
 	finaliseStatusCompleted finaliseStatus = iota
 	finaliseStatusFailed
 	finaliseStatusRetrying
+	finaliseStatusDelayed
 	finaliseStatusError
 )
 
@@ -1144,6 +1150,18 @@ func (w *Worker) finalise(jobID, token string, jobMap map[string]string, out han
 			return pf, finaliseStatusError, err
 		}
 		return pf, finaliseStatusCompleted, nil
+	}
+
+	// **遅延の要求は失敗ではない。** 試行回数 (atm) も retry の判断も通さず、
+	// そのまま delayed へ戻す。BullMQ の DelayedError と同じく moveToDelayed の
+	// skip-attempt を立てる。failedReason / stacktrace も書かない — 書くと
+	// 管理画面が失敗した job に見せる。
+	var delayed *DelayedError
+	if errors.As(out.err, &delayed) {
+		if err := w.moveToDelayedKeepingAttempts(jobID, token, delayed.Delay); err != nil {
+			return nil, finaliseStatusError, err
+		}
+		return nil, finaliseStatusDelayed, nil
 	}
 
 	// Re-read atm from Redis instead of trusting the moveToActive
@@ -1390,6 +1408,37 @@ func (w *Worker) retryImmediate(jobID, token string, lifo bool, reason string, h
 	}
 	if code, ok := res.(int64); ok && code < 0 {
 		return fmt.Errorf("retryJob returned error code %d", code)
+	}
+	return nil
+}
+
+// moveToDelayedKeepingAttempts moves an active job back to delayed for
+// delay without bumping atm, for handlers that returned a DelayedError.
+func (w *Worker) moveToDelayedKeepingAttempts(jobID, token string, delay time.Duration) error {
+	// retryDelayed と揃えて 1 ms を床にする。0 以下でも Lua は過去の時刻で
+	// delayed に入れてすぐ promote するので挙動は変わらないが、「delayed を
+	// 通る」ことを値の上でも保証しておく。
+	delayMs := max(delay.Milliseconds(), 1)
+	keys := w.keys.moveToDelayedKeys(jobID)
+	res, err := w.scripts.Run(
+		context.Background(),
+		lua.MoveToDelayed,
+		keys,
+		w.keys.prefix,
+		time.Now().UnixMilli(),
+		jobID,
+		token,
+		delayMs,
+		"1", // skip attempt = true: the job did not fail, so atm stays
+		"",  // no job fields to update
+		"",  // fetchNext=false
+		"",  // opts
+	)
+	if err != nil {
+		return fmt.Errorf("moveToDelayed: %w", err)
+	}
+	if code, ok := res.(int64); ok && code < 0 {
+		return fmt.Errorf("moveToDelayed returned error code %d", code)
 	}
 	return nil
 }

@@ -6,6 +6,30 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `DelayedError` (and the `Delay` helper) lets a handler put its job
+  back in the delayed set without consuming an attempt. The job keeps
+  its ID and history and comes back once the delay elapses with the
+  same attempts left as before; nothing is written to `failedReason`,
+  and it is not counted as a failure.
+
+  ```go
+  if breakerOpen(host) {
+      return nil, fmt.Errorf("%s is down: %w", host, mkq.Delay(time.Until(nextProbe)))
+  }
+  ```
+
+  It is for "not now" rather than "failed": a downstream known to be
+  down, or one that asked to be left alone for a while. Returning a
+  plain error there would spend the retry budget on waiting and drop
+  the job before the downstream recovers.
+
+  This is BullMQ's `DelayedError`, which a JS handler throws after
+  `job.moveToDelayed` (`skipAttempt: true`): the transition is the same
+  `moveToDelayed` script with its skip-attempt flag set, so nothing
+  changes on the wire.
+
 ## [1.3.0] - 2026-09-23
 
 ### Added
