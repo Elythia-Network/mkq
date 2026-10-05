@@ -10,9 +10,9 @@
     "bullboard": "node bullboard.js"
   },
   "dependencies": {
-    "@bull-board/api": "9.10.1",
-    "@bull-board/express": "9.10.1",
-    "bullmq": "6.3.8",
+    "@bull-board/api": "9.10.2",
+    "@bull-board/express": "9.10.2",
+    "bullmq": "6.3.11",
     "express": "5.2.1",
     "ioredis": "5.10.1"
   }
