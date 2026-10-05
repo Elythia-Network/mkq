@@ -4,7 +4,7 @@
   "type": "module",
   "description": "BullMQ TS counterpart of bench/go for the mkq vs BullMQ throughput / latency comparison. ioredis is explicit: BullMQ 6 made it an optional peer dependency, which npm does not install on its own.",
   "dependencies": {
-    "bullmq": "6.3.8",
+    "bullmq": "6.3.11",
     "ioredis": "6.0.0"
   }
 }
