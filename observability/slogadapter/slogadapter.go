@@ -3,8 +3,8 @@
 // Usage:
 //
 //	import "log/slog"
-//	import "github.com/shiroha-a/mkq"
-//	import "github.com/shiroha-a/mkq/observability/slogadapter"
+//	import "github.com/elythia-network/mkq"
+//	import "github.com/elythia-network/mkq/observability/slogadapter"
 //
 //	client, _ := mkq.NewClient(ctx, mkq.Config{
 //	    Redis:  redis.UniversalOptions{Addrs: []string{"localhost:6379"}},

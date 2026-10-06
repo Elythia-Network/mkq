@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/shiroha-a/mkq/internal/lua"
+	"github.com/elythia-network/mkq/internal/lua"
 )
 
 // QueueMetrics is the BullMQ-compatible per-minute job count snapshot

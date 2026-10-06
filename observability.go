@@ -11,7 +11,7 @@ import (
 // failures). The default is a noop — unconfigured clients see zero
 // behavioural change and no allocation overhead.
 //
-// Adapters live under github.com/shiroha-a/mkq/observability/...:
+// Adapters live under github.com/elythia-network/mkq/observability/...:
 //
 //   - slogadapter: bridges to *slog.Logger.
 //

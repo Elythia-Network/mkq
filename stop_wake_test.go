@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/elythia-network/mkq"
 	"github.com/redis/go-redis/v9"
-	"github.com/shiroha-a/mkq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

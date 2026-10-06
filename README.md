@@ -6,7 +6,7 @@ BullMQ-compatible Go-native job queue. Drop-in replacement for
 UIs, and BullMQ workers in any language can share without translation.
 
 ```go
-import "github.com/shiroha-a/mkq"
+import "github.com/elythia-network/mkq"
 
 queue := mkq.Define[Email](client, "email")
 queue.Add(ctx, Email{To: "alice@example.com"}, mkq.WithAttempts(3))
@@ -41,12 +41,12 @@ in this README; observability adapters and Inspector API may gain
 methods (additive only) before the 1.0 tag. See [#1] for the
 roadmap.
 
-[#1]: https://github.com/shiroha-a/mkq/issues/1
+[#1]: https://github.com/Elythia-Network/mkq/issues/1
 
 ## Install
 
 ```sh
-go get github.com/shiroha-a/mkq
+go get github.com/elythia-network/mkq
 ```
 
 Requires Go 1.27+ and Redis 7+ (Redis 6.2+ also works; tested against
@@ -65,7 +65,7 @@ import (
     "time"
 
     "github.com/redis/go-redis/v9"
-    "github.com/shiroha-a/mkq"
+    "github.com/elythia-network/mkq"
 )
 
 type Email struct {
@@ -224,10 +224,10 @@ import (
     "github.com/prometheus/client_golang/prometheus"
     "go.opentelemetry.io/otel"
 
-    "github.com/shiroha-a/mkq"
-    "github.com/shiroha-a/mkq/observability/oteladapter"
-    "github.com/shiroha-a/mkq/observability/promadapter"
-    "github.com/shiroha-a/mkq/observability/slogadapter"
+    "github.com/elythia-network/mkq"
+    "github.com/elythia-network/mkq/observability/oteladapter"
+    "github.com/elythia-network/mkq/observability/promadapter"
+    "github.com/elythia-network/mkq/observability/slogadapter"
 )
 
 client, _ := mkq.NewClient(ctx, mkq.Config{
@@ -354,10 +354,10 @@ the asynq → mkq migration walkthrough.
 
 ## Documentation
 
-- Package godoc: https://pkg.go.dev/github.com/shiroha-a/mkq
+- Package godoc: https://pkg.go.dev/github.com/elythia-network/mkq
 - Migration from asynq: [docs/MIGRATING_FROM_ASYNQ.md](docs/MIGRATING_FROM_ASYNQ.md)
 - Authoritative design (mk-go repo):
-  https://github.com/shiroha-a/mk/blob/develop/docs/design/mkq-design.md
+  https://github.com/Elythia-Network/elythia/blob/develop/docs/design/mkq-design.md
 
 ## Development
 

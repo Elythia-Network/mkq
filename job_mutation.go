@@ -8,7 +8,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/shiroha-a/mkq/internal/lua"
+	"github.com/elythia-network/mkq/internal/lua"
 )
 
 // UpdateProgress reports a progress value for the job. The value is

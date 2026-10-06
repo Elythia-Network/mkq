@@ -11,7 +11,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/shiroha-a/mkq/internal/keys"
+	"github.com/elythia-network/mkq/internal/keys"
 )
 
 // Event is the marker interface for entries surfaced by QueueEvents.

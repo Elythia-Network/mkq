@@ -7,7 +7,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/shiroha-a/mkq/internal/lua"
+	"github.com/elythia-network/mkq/internal/lua"
 )
 
 // ListedJob bundles a typed Job with its post-processing JobState

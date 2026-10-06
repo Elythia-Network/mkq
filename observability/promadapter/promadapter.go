@@ -3,8 +3,8 @@
 // Usage:
 //
 //	import "github.com/prometheus/client_golang/prometheus"
-//	import "github.com/shiroha-a/mkq"
-//	import "github.com/shiroha-a/mkq/observability/promadapter"
+//	import "github.com/elythia-network/mkq"
+//	import "github.com/elythia-network/mkq/observability/promadapter"
 //
 //	m := promadapter.New(prometheus.DefaultRegisterer)
 //	client, _ := mkq.NewClient(ctx, mkq.Config{
@@ -25,7 +25,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/shiroha-a/mkq"
+	"github.com/elythia-network/mkq"
 )
 
 // Metrics adapts Prometheus collectors to mkq.Metrics. Construct via

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/shiroha-a/mkq/internal/lua"
+	"github.com/elythia-network/mkq/internal/lua"
 )
 
 // JobBucket identifies a state-key bucket the BullMQ wire format uses

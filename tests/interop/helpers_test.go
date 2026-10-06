@@ -15,7 +15,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/shiroha-a/mkq"
+	"github.com/elythia-network/mkq"
 )
 
 // nodeWorkerOpts customises a startNodeWorker call beyond the

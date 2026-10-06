@@ -3,8 +3,8 @@
 // Usage:
 //
 //	import "go.opentelemetry.io/otel"
-//	import "github.com/shiroha-a/mkq"
-//	import "github.com/shiroha-a/mkq/observability/oteladapter"
+//	import "github.com/elythia-network/mkq"
+//	import "github.com/elythia-network/mkq/observability/oteladapter"
 //
 //	tracer := otel.Tracer("mkq")
 //	client, _ := mkq.NewClient(ctx, mkq.Config{
@@ -25,7 +25,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/shiroha-a/mkq"
+	"github.com/elythia-network/mkq"
 )
 
 // Tracer adapts go.opentelemetry.io/otel/trace.Tracer to mkq.Tracer.

@@ -9,9 +9,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/shiroha-a/mkq/internal/keys"
-	"github.com/shiroha-a/mkq/internal/lua"
-	"github.com/shiroha-a/mkq/internal/proto"
+	"github.com/elythia-network/mkq/internal/keys"
+	"github.com/elythia-network/mkq/internal/lua"
+	"github.com/elythia-network/mkq/internal/proto"
 )
 
 // Queue is a typed handle to a BullMQ-compatible queue.

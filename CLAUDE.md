@@ -5,7 +5,7 @@ BullMQ-compatible Go-native job queue library. Drop-in alternative to asynq for 
 ## Authoritative design
 
 Primary design document lives in the mk-go repo:
-https://github.com/shiroha-a/mk/blob/develop/docs/design/mkq-design.md
+https://github.com/Elythia-Network/elythia/blob/develop/docs/design/mkq-design.md
 
 Design-level changes go through a mk-go PR. Implementation-level notes (godoc, internal design decisions) belong in this repo under `docs/` or as package doc comments.
 
