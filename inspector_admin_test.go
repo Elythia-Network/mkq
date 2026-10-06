@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/shiroha-a/mkq"
+	"github.com/elythia-network/mkq"
 )
 
 // TestInspectorAdmin_RemoveJob_FromWait removes a wait-state job and

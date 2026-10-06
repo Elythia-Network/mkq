@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/shiroha-a/mkq"
+	"github.com/elythia-network/mkq"
 )
 
 // listIDs walks a bucket one page at a time and returns the ids in the

@@ -7,7 +7,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/shiroha-a/mkq/internal/lua"
+	"github.com/elythia-network/mkq/internal/lua"
 )
 
 // RemoveJob deletes a job and all its associated keys (logs, lock,

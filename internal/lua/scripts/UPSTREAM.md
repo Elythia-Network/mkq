@@ -28,7 +28,7 @@ Go modules don't pull submodule contents on `go get`, so the Lua
 files must live inside the module tree for `go:embed` to work for
 downstream consumers. The submodule at `third_party/bullmq` is
 test/dev/CI tooling only — never required for `go get
-github.com/shiroha-a/mkq` to succeed.
+github.com/elythia-network/mkq` to succeed.
 
 ## Files vendored
 

@@ -10,7 +10,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/shiroha-a/mkq/internal/lua"
+	"github.com/elythia-network/mkq/internal/lua"
 )
 
 // Config configures a Client.
@@ -24,7 +24,7 @@ type Config struct {
 
 	// Logger receives operational records (stalled-scan failures,
 	// NOSCRIPT reload events, etc.). Nil = noop. Adapters live under
-	// github.com/shiroha-a/mkq/observability/... — opt-in.
+	// github.com/elythia-network/mkq/observability/... — opt-in.
 	Logger Logger
 	// Metrics receives counter / histogram / gauge updates from the
 	// hot paths. Nil = noop. See the Metrics interface godoc for the

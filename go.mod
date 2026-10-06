@@ -1,6 +1,9 @@
-module github.com/shiroha-a/mkq
+module github.com/elythia-network/mkq
 
 go 1.27.1
+
+// Published as github.com/shiroha-a/mkq; not fetchable under this path. Use v1.5.0 or later.
+retract [v1.0.0, v1.4.0]
 
 require (
 	github.com/google/uuid v1.6.0

@@ -48,6 +48,18 @@ jobs:
             echo "no tags yet; nothing to compare against" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
+          # **モジュールパスが変わった直後は比べない。** base 側は base の go.mod の
+          # パスで解析されるので、mkq の型をシグネチャに含む API (oteladapter など)
+          # が「型が変わった」と報告され、API は同じなのに必ず落ちる。パスの変更
+          # そのものは major を要しない (#133)。新しいパスでタグを打った後の PR は
+          # 普段どおり比べる。
+          base_module=$(git show "$base:go.mod" | awk '/^module / {print $2; exit}')
+          cur_module=$(awk '/^module / {print $2; exit}' go.mod)
+          if [ "$base_module" != "$cur_module" ]; then
+            echo "module path changed ($base_module -> $cur_module); skipping comparison against $base" >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::module path changed since $base; gorelease comparison skipped"
+            exit 0
+          fi
           gover=$(awk '/^go [0-9]/ {print $2; exit}' go.mod)
           echo "comparing against $base"
           # gorelease は非互換を見つけると 1 を返すので、ここで落とさない。

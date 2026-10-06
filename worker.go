@@ -17,9 +17,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 
-	"github.com/shiroha-a/mkq/internal/keys"
-	"github.com/shiroha-a/mkq/internal/lua"
-	"github.com/shiroha-a/mkq/internal/proto"
+	"github.com/elythia-network/mkq/internal/keys"
+	"github.com/elythia-network/mkq/internal/lua"
+	"github.com/elythia-network/mkq/internal/proto"
 )
 
 // Handler is the user function invoked once per dequeued job. The

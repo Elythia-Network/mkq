@@ -6,6 +6,22 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **The module path is now `github.com/elythia-network/mkq`** (was
+  `github.com/shiroha-a/mkq`). The repository moved to
+  `Elythia-Network/mkq` (#133). Update your imports:
+
+  ```go
+  import "github.com/elythia-network/mkq"
+  ```
+
+  Nothing else changes: the Redis wire format and the public API are
+  the same as 1.4.0. Versions up to 1.4.0 remain available under the
+  old path when pinned; `go get -u` / `@latest` on the old path now
+  fails with a path mismatch that names the new path. Under the new
+  path, v1.0.0 through v1.4.0 are retracted.
+
 ## [1.4.0] - 2026-09-28
 
 ### Added
@@ -730,19 +746,19 @@ fix bugs without breaking existing callers.
   TS pull ahead 1.24× at concurrency=16. Documented as the
   Redis-client-level gap in `bench/README.md`.
 
-[Unreleased]: https://github.com/shiroha-a/mkq/compare/v1.4.0...HEAD
-[1.4.0]: https://github.com/shiroha-a/mkq/releases/tag/v1.4.0
-[1.3.0]: https://github.com/shiroha-a/mkq/releases/tag/v1.3.0
-[1.2.1]: https://github.com/shiroha-a/mkq/releases/tag/v1.2.1
-[1.2.0]: https://github.com/shiroha-a/mkq/releases/tag/v1.2.0
-[1.1.1]: https://github.com/shiroha-a/mkq/releases/tag/v1.1.1
-[1.1.0]: https://github.com/shiroha-a/mkq/releases/tag/v1.1.0
-[1.0.8]: https://github.com/shiroha-a/mkq/releases/tag/v1.0.8
-[1.0.7]: https://github.com/shiroha-a/mkq/releases/tag/v1.0.7
-[1.0.6]: https://github.com/shiroha-a/mkq/releases/tag/v1.0.6
-[1.0.5]: https://github.com/shiroha-a/mkq/releases/tag/v1.0.5
-[1.0.4]: https://github.com/shiroha-a/mkq/releases/tag/v1.0.4
-[1.0.3]: https://github.com/shiroha-a/mkq/releases/tag/v1.0.3
-[1.0.2]: https://github.com/shiroha-a/mkq/releases/tag/v1.0.2
-[1.0.1]: https://github.com/shiroha-a/mkq/releases/tag/v1.0.1
-[1.0.0]: https://github.com/shiroha-a/mkq/releases/tag/v1.0.0
+[Unreleased]: https://github.com/Elythia-Network/mkq/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/Elythia-Network/mkq/releases/tag/v1.4.0
+[1.3.0]: https://github.com/Elythia-Network/mkq/releases/tag/v1.3.0
+[1.2.1]: https://github.com/Elythia-Network/mkq/releases/tag/v1.2.1
+[1.2.0]: https://github.com/Elythia-Network/mkq/releases/tag/v1.2.0
+[1.1.1]: https://github.com/Elythia-Network/mkq/releases/tag/v1.1.1
+[1.1.0]: https://github.com/Elythia-Network/mkq/releases/tag/v1.1.0
+[1.0.8]: https://github.com/Elythia-Network/mkq/releases/tag/v1.0.8
+[1.0.7]: https://github.com/Elythia-Network/mkq/releases/tag/v1.0.7
+[1.0.6]: https://github.com/Elythia-Network/mkq/releases/tag/v1.0.6
+[1.0.5]: https://github.com/Elythia-Network/mkq/releases/tag/v1.0.5
+[1.0.4]: https://github.com/Elythia-Network/mkq/releases/tag/v1.0.4
+[1.0.3]: https://github.com/Elythia-Network/mkq/releases/tag/v1.0.3
+[1.0.2]: https://github.com/Elythia-Network/mkq/releases/tag/v1.0.2
+[1.0.1]: https://github.com/Elythia-Network/mkq/releases/tag/v1.0.1
+[1.0.0]: https://github.com/Elythia-Network/mkq/releases/tag/v1.0.0

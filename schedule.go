@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/shiroha-a/mkq/internal/lua"
-	"github.com/shiroha-a/mkq/internal/proto"
+	"github.com/elythia-network/mkq/internal/lua"
+	"github.com/elythia-network/mkq/internal/proto"
 )
 
 // scheduleConfig is the typed-option bag for UpsertScheduleEvery /

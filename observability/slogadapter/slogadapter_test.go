@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shiroha-a/mkq"
+	"github.com/elythia-network/mkq"
 )
 
 // Compile-time assertion: *Logger must satisfy mkq.Logger.
