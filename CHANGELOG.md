@@ -6,6 +6,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-10-06
+
 ### Changed
 
 - **The module path is now `github.com/elythia-network/mkq`** (was
@@ -746,7 +748,8 @@ fix bugs without breaking existing callers.
   TS pull ahead 1.24× at concurrency=16. Documented as the
   Redis-client-level gap in `bench/README.md`.
 
-[Unreleased]: https://github.com/Elythia-Network/mkq/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/Elythia-Network/mkq/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/Elythia-Network/mkq/releases/tag/v1.5.0
 [1.4.0]: https://github.com/Elythia-Network/mkq/releases/tag/v1.4.0
 [1.3.0]: https://github.com/Elythia-Network/mkq/releases/tag/v1.3.0
 [1.2.1]: https://github.com/Elythia-Network/mkq/releases/tag/v1.2.1
