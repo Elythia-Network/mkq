@@ -72,10 +72,12 @@ jobs:
         # (1.26.0) を基準に toolchain を選ぶ。そのままだと
         # `the Go language version (go1.26) used to build golangci-lint is
         # lower than the targeted Go version (1.27.1)` で止まる。
+        # Go 1.27.2 では、v2.13.2 は標準ライブラリの export data (version 5) を
+        # 読めず typecheck で落ちるので、v2.14.0 にした。
         run: |
           gover=$(awk '/^go [0-9]/ {print $2; exit}' go.mod)
           GOWORK=off GOTOOLCHAIN="go$gover" \
-            go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2 \
+            go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0 \
             run --timeout 10m
 
       - name: actionlint
