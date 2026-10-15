@@ -6,7 +6,7 @@ Lua scripts in this directory are vendored verbatim from BullMQ.
 - Source path: `src/commands/`
 - Pinned commit: see `.gitmodules` and the checked-out SHA of
   `third_party/bullmq` (recorded redundantly here:
-  `578ead3f575c8a3999e1a751b0cee7e34f6d936b`, 2026-09-18)
+  `222d51dc07470a2052583b41cc6563f65bd7a4d3`, 6.3.11 の `chore(release)`、2026-10-15)
 - License: MIT (see `THIRD_PARTY_NOTICES.md` at the repo root)
 
 ## Why the pin is a commit, not a tag

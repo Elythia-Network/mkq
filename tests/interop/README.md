@@ -41,7 +41,7 @@ The `interop` build tag keeps these tests out of the default
 
 ## Why npm-published bullmq instead of the submodule?
 
-`tests/interop/node/package.json` pins `bullmq@6.3.8` — the exact
+`tests/interop/node/package.json` pins `bullmq@6.3.11` — the exact
 version checked into `third_party/bullmq` at the current submodule
 SHA. Using the npm-published package skips the build step that would
 otherwise be required to link the submodule's TypeScript into a node
