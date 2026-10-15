@@ -6,6 +6,12 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- The pinned BullMQ moves from 6.3.8 to 6.3.11 (submodule, interop and
+  bench). The vendored Lua scripts are unchanged: BullMQ did not touch
+  `src/commands/` between the two versions.
+
 ## [1.5.1] - 2026-10-15
 
 ### Changed
