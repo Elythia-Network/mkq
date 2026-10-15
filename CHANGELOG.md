@@ -6,6 +6,15 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The stalled-jobs scan now runs once per `WithStalledInterval` instead
+  of roughly every second interval, so a job left in active by a dead
+  worker is recovered up to one interval sooner (#136). The Worker
+  scans once at start and then one interval after each scan finishes,
+  as BullMQ does, and sets the `stalled-check` key's TTL to 90% of the
+  interval. The Lua script and the Redis keys are unchanged.
+
 ## [1.5.0] - 2026-10-06
 
 ### Changed

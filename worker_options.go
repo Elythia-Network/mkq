@@ -78,8 +78,11 @@ func WithIdlePollInterval(d time.Duration) WorkerOption {
 
 // WithStalledInterval controls how often each Worker scans for jobs
 // whose lock has expired (a worker that crashed or lost its Redis
-// connection). The Lua's stalled-check key TTL is set to this value
-// so concurrent workers serialise the scan.
+// connection). The Worker scans once at start and then this long after
+// each scan finishes, as BullMQ does. The Lua's stalled-check key TTL
+// is set slightly below this value (90%) so concurrent workers
+// serialise the scan without the key outliving the next scheduled one.
+// Zero or a negative value disables the scan on this Worker.
 //
 // BullMQ's default is 30s and works well for most production setups;
 // shorter intervals shorten the recovery window at the cost of more
