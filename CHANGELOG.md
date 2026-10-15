@@ -6,6 +6,12 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Go 1.27.2. The `go` directive moves to `1.27.2` to pick up the standard
+  library security fixes in `net/http` (GO-2026-6611 / GO-2026-6613 /
+  GO-2026-6617), which govulncheck reported as reachable on 1.27.1.
+
 ## [1.5.0] - 2026-10-06
 
 ### Changed

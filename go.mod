@@ -1,6 +1,6 @@
 module github.com/elythia-network/mkq
 
-go 1.27.1
+go 1.27.2
 
 // Published as github.com/shiroha-a/mkq; not fetchable under this path. Use v1.5.0 or later.
 retract [v1.0.0, v1.4.0]
