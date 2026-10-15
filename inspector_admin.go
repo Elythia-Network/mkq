@@ -191,9 +191,10 @@ func WithResetAttempts(reset bool) RetryOption {
 }
 
 // RetryJob re-enqueues a job from the failed (or completed) ZSET
-// back into wait. Equivalent to BullMQ's Job.retry and the second
-// half of asynq's Inspector.RunTask (the first half is PromoteJob
-// for delayed jobs).
+// back into wait, or into prioritized when the job carries a non-zero
+// priority (BullMQ 6.3.15 and later). Equivalent to BullMQ's
+// Job.retry and the second half of asynq's Inspector.RunTask (the
+// first half is PromoteJob for delayed jobs).
 //
 // Returns:
 //   - ErrJobNotFound          — the job HASH is missing entirely
@@ -249,6 +250,10 @@ func (q *Queue[T]) RetryJob(ctx context.Context, jobID string, opts ...RetryOpti
 			// wait に入るので、行き先を分ける必要が無くなったため。
 			q.keys.Active(),
 			q.keys.Marker(),
+			// BullMQ 6.3.15 (taskforcesh/bullmq#4926) から、優先度の付いた
+			// job は wait ではなく prioritized へ戻す。そのための 2 鍵。
+			q.keys.Prioritized(),
+			q.keys.PriorityCounter(),
 		},
 		jobID,
 		"LPUSH", // FIFO push (matches BullMQ default; LIFO retry isn't a documented BullMQ feature)

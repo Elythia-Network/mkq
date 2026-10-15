@@ -6,7 +6,7 @@ Lua scripts in this directory are vendored verbatim from BullMQ.
 - Source path: `src/commands/`
 - Pinned commit: see `.gitmodules` and the checked-out SHA of
   `third_party/bullmq` (recorded redundantly here:
-  `222d51dc07470a2052583b41cc6563f65bd7a4d3`, 6.3.11 の `chore(release)`、2026-10-15)
+  `6e125d7bc594635b3e4fbb7402c490376f86210a`, 6.3.15 の `chore(release)`、2026-10-15)
 - License: MIT (see `THIRD_PARTY_NOTICES.md` at the repo root)
 
 ## Why the pin is a commit, not a tag
@@ -54,7 +54,7 @@ Entry points:
 - `removeJob-2.lua`
 - `drain-5.lua`
 - `promote-9.lua`
-- `reprocessJob-7.lua`
+- `reprocessJob-9.lua`
 - `getMetrics-2.lua`
 - `pause-7.lua`
 

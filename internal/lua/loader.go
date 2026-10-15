@@ -52,7 +52,7 @@ const (
 	RemoveJob             ScriptName = "removeJob-2"
 	Drain                 ScriptName = "drain-5"
 	Promote               ScriptName = "promote-9"
-	ReprocessJob          ScriptName = "reprocessJob-7"
+	ReprocessJob          ScriptName = "reprocessJob-9"
 	Pause                 ScriptName = "pause-7"
 )
 

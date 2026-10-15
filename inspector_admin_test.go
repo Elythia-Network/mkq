@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -291,4 +292,205 @@ func TestInspectorAdmin_RetryJob_NotInExpectedState(t *testing.T) {
 type redisLPosArgs = struct {
 	Rank   int64
 	MaxLen int64
+}
+
+// failJobOnce drives job to the failed ZSET with a worker whose handler
+// always errors, then stops that worker.
+func failJobOnce(t *testing.T, ctx context.Context, queue *mkq.Queue[testPayload], base, jobID string) {
+	t.Helper()
+	finishJobOnce(t, ctx, queue, base+"failed", jobID, errors.New("intentional fail"))
+}
+
+// finishJobOnce runs one worker until jobID lands in finishedKey (the
+// failed or completed ZSET), with the handler returning handlerErr, and
+// then stops that worker.
+func finishJobOnce(t *testing.T, ctx context.Context, queue *mkq.Queue[testPayload], finishedKey, jobID string, handlerErr error) {
+	t.Helper()
+	handled := make(chan struct{}, 1)
+	w, err := mkq.Process(queue, func(_ context.Context, _ *mkq.Job[testPayload]) (any, error) {
+		select {
+		case handled <- struct{}{}:
+		default:
+		}
+		return nil, handlerErr
+	}, mkq.WithIdlePollInterval(20*time.Millisecond))
+	require.NoError(t, err)
+	select {
+	case <-handled:
+	case <-ctx.Done():
+		_ = w.Stop(context.Background())
+		t.Fatalf("job %s was not handled before the deadline: %v", jobID, ctx.Err())
+	}
+	rdb := rawClient(t)
+	waitFor(t, ctx, 20*time.Millisecond, func() bool {
+		v, _ := rdb.ZScore(ctx, finishedKey, jobID).Result()
+		return v > 0
+	})
+	require.NoError(t, w.Stop(context.Background()))
+}
+
+// TestInspectorAdmin_RetryJob_PrioritizedGoesBackToPrioritized pins the
+// BullMQ 6.3.15 reprocessJob-9 behaviour: a failed job that carries a
+// priority is re-enqueued into the prioritized ZSET, not the wait LIST.
+func TestInspectorAdmin_RetryJob_PrioritizedGoesBackToPrioritized(t *testing.T) {
+	t.Parallel()
+	prefix := uniquePrefix(t)
+	c := newClient(t, prefix)
+	queue := mkq.Define[testPayload](c, "deliver")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	const priority = 5
+	job, err := queue.Add(ctx, testPayload{Inbox: "prioritized"}, mkq.WithPriority(priority))
+	require.NoError(t, err)
+
+	base := prefix + ":deliver:"
+	failJobOnce(t, ctx, queue, base, job.ID)
+
+	require.NoError(t, queue.RetryJob(ctx, job.ID))
+
+	rdb := rawClient(t)
+	score, err := rdb.ZScore(ctx, base+"prioritized", job.ID).Result()
+	require.NoError(t, err, "retried prioritized job must be in the prioritized ZSET")
+	// addJobWithPriority は priority * 2^32 + カウンターをスコアにする。
+	assert.GreaterOrEqual(t, score, float64(uint64(priority)<<32), "score must encode the job's priority")
+	assert.Less(t, score, float64(uint64(priority+1)<<32), "score must encode the job's priority")
+
+	waitList, err := rdb.LRange(ctx, base+"wait", 0, -1).Result()
+	require.NoError(t, err)
+	assert.NotContains(t, waitList, job.ID, "retried prioritized job must not land on the wait LIST")
+
+	failedN, err := rdb.ZCard(ctx, base+"failed").Result()
+	require.NoError(t, err)
+	assert.EqualValues(t, 0, failedN, "job must leave the failed ZSET")
+
+	counts, err := queue.Counts(ctx)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, counts.Prioritized)
+	assert.EqualValues(t, 0, counts.Wait)
+}
+
+// TestInspectorAdmin_RetryJob_UnprioritizedGoesBackToWait keeps the
+// priority-0 branch of reprocessJob-9 on the wait LIST.
+func TestInspectorAdmin_RetryJob_UnprioritizedGoesBackToWait(t *testing.T) {
+	t.Parallel()
+	prefix := uniquePrefix(t)
+	c := newClient(t, prefix)
+	queue := mkq.Define[testPayload](c, "deliver")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	job, err := queue.Add(ctx, testPayload{Inbox: "plain"})
+	require.NoError(t, err)
+
+	base := prefix + ":deliver:"
+	failJobOnce(t, ctx, queue, base, job.ID)
+
+	require.NoError(t, queue.RetryJob(ctx, job.ID))
+
+	rdb := rawClient(t)
+	waitList, err := rdb.LRange(ctx, base+"wait", 0, -1).Result()
+	require.NoError(t, err)
+	assert.Contains(t, waitList, job.ID)
+	n, err := rdb.ZCard(ctx, base+"prioritized").Result()
+	require.NoError(t, err)
+	assert.EqualValues(t, 0, n)
+}
+
+// TestInspectorAdmin_RetryJob_FlowChildBackToParentDependencies covers
+// moveChildBackToParentDependencies for a flow child written by a
+// foreign BullMQ producer. mkq does not create flows, so the parent
+// linkage is seeded directly in Redis the way BullMQ's moveToFinished
+// leaves it for a finished child.
+func TestInspectorAdmin_RetryJob_FlowChildBackToParentDependencies(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		// from is the bucket the child finished in and is retried from.
+		from mkq.JobBucket
+		// seed records the finished child on the parent the way BullMQ does.
+		seed func(ctx context.Context, rdb *redis.Client, parentKey, childKey string) error
+		// stillRecorded reports whether the child is still recorded there.
+		stillRecorded func(ctx context.Context, rdb *redis.Client, parentKey, childKey string) (bool, error)
+	}{
+		{
+			// continueParentOnFailure / ignoreDependencyOnFailure の子の失敗は、
+			// 親の :failed hash に積まれる。
+			name: "failed child recorded in parent failed hash",
+			from: mkq.JobBucketFailed,
+			seed: func(ctx context.Context, rdb *redis.Client, parentKey, childKey string) error {
+				return rdb.HSet(ctx, parentKey+":failed", childKey, "intentional fail").Err()
+			},
+			stillRecorded: func(ctx context.Context, rdb *redis.Client, parentKey, childKey string) (bool, error) {
+				return rdb.HExists(ctx, parentKey+":failed", childKey).Result()
+			},
+		},
+		{
+			// failParentOnFailure の子の失敗は、親の :unsuccessful zset に積まれる。
+			name: "failed child recorded in parent unsuccessful zset",
+			from: mkq.JobBucketFailed,
+			seed: func(ctx context.Context, rdb *redis.Client, parentKey, childKey string) error {
+				return rdb.ZAdd(ctx, parentKey+":unsuccessful", redis.Z{Score: 1, Member: childKey}).Err()
+			},
+			stillRecorded: func(ctx context.Context, rdb *redis.Client, parentKey, childKey string) (bool, error) {
+				_, err := rdb.ZScore(ctx, parentKey+":unsuccessful", childKey).Result()
+				if errors.Is(err, redis.Nil) {
+					return false, nil
+				}
+				return err == nil, err
+			},
+		},
+		{
+			// 完了した子は、親の :processed hash に返り値と一緒に積まれる。
+			name: "completed child recorded in parent processed hash",
+			from: mkq.JobBucketCompleted,
+			seed: func(ctx context.Context, rdb *redis.Client, parentKey, childKey string) error {
+				return rdb.HSet(ctx, parentKey+":processed", childKey, "null").Err()
+			},
+			stillRecorded: func(ctx context.Context, rdb *redis.Client, parentKey, childKey string) (bool, error) {
+				return rdb.HExists(ctx, parentKey+":processed", childKey).Result()
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			prefix := uniquePrefix(t)
+			c := newClient(t, prefix)
+			queue := mkq.Define[testPayload](c, "deliver")
+
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+
+			job, err := queue.Add(ctx, testPayload{Inbox: "child"})
+			require.NoError(t, err)
+
+			base := prefix + ":deliver:"
+			var handlerErr error
+			if tt.from == mkq.JobBucketFailed {
+				handlerErr = errors.New("intentional fail")
+			}
+			finishJobOnce(t, ctx, queue, base+string(tt.from), job.ID, handlerErr)
+
+			rdb := rawClient(t)
+			childKey := base + job.ID
+			parentKey := prefix + ":parents:p1"
+			require.NoError(t, rdb.HSet(ctx, parentKey, "name", "parent").Err())
+			require.NoError(t, rdb.HSet(ctx, childKey, "parentKey", parentKey).Err())
+			require.NoError(t, tt.seed(ctx, rdb, parentKey, childKey))
+
+			require.NoError(t, queue.RetryJob(ctx, job.ID, mkq.WithRetryFromState(tt.from)))
+
+			isDep, err := rdb.SIsMember(ctx, parentKey+":dependencies", childKey).Result()
+			require.NoError(t, err)
+			assert.True(t, isDep, "retried child must be back in the parent's dependencies")
+			still, err := tt.stillRecorded(ctx, rdb, parentKey, childKey)
+			require.NoError(t, err)
+			assert.False(t, still, "retried child must leave the parent's finished-children record")
+		})
+	}
 }

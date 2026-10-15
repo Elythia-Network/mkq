@@ -8,9 +8,22 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- The pinned BullMQ moves from 6.3.8 to 6.3.11 (submodule, interop and
-  bench). The vendored Lua scripts are unchanged: BullMQ did not touch
-  `src/commands/` between the two versions.
+- The pinned BullMQ moves from 6.3.8 to 6.3.15 (submodule, interop and
+  bench). Between 6.3.8 and 6.3.11 BullMQ did not touch `src/commands/`.
+  6.3.13 moved the flow-child handling of `reprocessJob` into the new
+  include `moveChildBackToParentDependencies` and called it from
+  `moveJobsToWait` as well (taskforcesh/bullmq#4879; mkq does not vendor
+  `moveJobsToWait`). 6.3.15 changed how `reprocessJob` treats a job with
+  a priority, described below (#140).
+- `RetryJob` now puts a failed or completed job that carries a priority
+  back into the prioritized set instead of the wait list, so it is picked
+  up in priority order, matching BullMQ 6.3.15's `Job.retry`
+  (taskforcesh/bullmq#4926). The vendored `reprocessJob-7.lua` is
+  replaced by `reprocessJob-9.lua`, which takes the `prioritized` and
+  priority counter (`pc`) keys as `KEYS[8]` / `KEYS[9]`, and the new
+  include `moveChildBackToParentDependencies.lua` from 6.3.13 is vendored. Jobs
+  without a priority still go back to the wait list, and a retried flow
+  child is still moved back into its parent's dependencies as before.
 
 ## [1.5.1] - 2026-10-15
 

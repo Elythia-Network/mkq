@@ -243,7 +243,7 @@ counts, _   := queue.Counts(ctx)                                       // QueueC
 listed, _   := queue.ListJobs(ctx, mkq.JobBucketWait, 0, 99, true)     // ascending=true
 job, st, _  := queue.Get(ctx, listed[0].Job.ID)                        // *Job[T] + *JobState
 
-queue.RetryJob(ctx, job.ID)                                            // failed -> wait
+queue.RetryJob(ctx, job.ID)                                            // failed -> wait (prioritized if the job has a priority)
 queue.PromoteJob(ctx, job.ID)                                          // delayed -> wait
 queue.RemoveJob(ctx, job.ID)
 queue.DrainPending(ctx, mkq.WithDrainDelayed(true))
