@@ -487,8 +487,8 @@ func (w *Worker) dispatchLoop(handlerAny any) {
 		processed, gotPrefetched, expireTimeMs, nextDelayedTs, err := w.tryOnce(handlerAny)
 		if err != nil {
 			// 取得や lua 失敗は Warn でログ (worker は止めない)。
-			// stalledLoop と同じ best-effort パターン: 単発失敗は次 tick
-			// で recover できるが、連続失敗時に黙ってジョブが滞留する
+			// stalledLoop と同じ best-effort パターン: 単発失敗は次の
+			// 走査で recover できるが、連続失敗時に黙ってジョブが滞留する
 			// ことを避けるため Logger 経由で ops に出す。
 			// エラー時は marker を待たずに idle interval だけ眠る:
 			// 連続失敗時に hot-loop しないため。
@@ -618,36 +618,65 @@ func (w *Worker) awaitMarker(timeout time.Duration) bool {
 	return w.runCtx.Err() == nil
 }
 
-// stalledLoop fires moveStalledJobsToWait at the configured interval.
-// One goroutine per Worker; concurrent workers serialise via the
-// Lua's stalled-check key TTL.
+// stalledLoop runs moveStalledJobsToWait once at start and then again
+// one stalledInterval after each scan finishes, the way BullMQ's
+// Worker.stalledChecker does. One goroutine per Worker; concurrent
+// workers serialise via the Lua's stalled-check key TTL (see
+// stalledCheckTTL).
+//
+// 以前は time.Ticker で周期どおりに撃ち、キーの有効期限も同じ周期にして
+// いた。次の tick の時点でキーがまだ残っていることが多く、走査が約 2 回に
+// 1 回しか走らなかった (#136)。BullMQ と同じく、走査が終わってから次を
+// 予約する形にし、起動直後にも 1 回走査する。
 func (w *Worker) stalledLoop() {
 	defer w.run.Done()
-	t := time.NewTicker(w.cfg.stalledInterval)
+	t := time.NewTimer(0)
 	defer t.Stop()
 	for {
 		select {
 		case <-w.runCtx.Done():
 			return
 		case <-t.C:
-			if err := w.runStalledCheck(); err != nil {
-				// Best-effort: a single tick's failure is recoverable
-				// (next tick will try again). Surface to ops via Logger
-				// so persistent failures don't stay invisible.
-				w.logger.Warn("mkq: stalled-jobs scan failed",
-					slog.String(AttrQueue, w.queueName),
-					slog.String(AttrError, err.Error()),
-				)
-				continue
-			}
 		}
+		if err := w.runStalledCheck(); err != nil {
+			// Best-effort: a single scan's failure is recoverable
+			// (the next one will try again). Surface to ops via Logger
+			// so persistent failures don't stay invisible.
+			w.logger.Warn("mkq: stalled-jobs scan failed",
+				slog.String(AttrQueue, w.queueName),
+				slog.String(AttrError, err.Error()),
+			)
+		}
+		t.Reset(w.cfg.stalledInterval)
 	}
+}
+
+// stalledCheckTTL returns the stalled-check key TTL (ARGV[4] of
+// moveStalledJobsToWait) for a given scan interval: the interval minus
+// a 10% margin, never below 1ms.
+//
+// BullMQ は周期そのものを渡す。BullMQ では、走査の応答が返ってから timer
+// を張る分の RTT と、Node の setTimeout の遅れが期限との間に挟まるので、
+// 空振りは目立ちにくいと考えられる (BullMQ 側では測っていない)。mkq でも
+// RTT は挟まるが、Go の timer はほぼ正確に撃ち、手元の Redis では RTT が
+// 1ms を切る。Redis はキーを「現在時刻 (ms) > 期限」になるまで消さない
+// ため、周期ちょうどで次の走査が届くと、同じ ms に収まった分だけキーが
+// 残っていて空振りする (実測で 1〜3 割)。期限を周期より少し短くして、
+// 次の走査が期限の後に届くようにする。キーの役目は「同じキューの複数
+// worker の走査を 1 本にまとめる」ことで、期限が 1 割短くても、まとめる
+// 働きはそのまま残る。Lua とキーの形は BullMQ と同じで、変わるのは渡す
+// 値だけ。
+func stalledCheckTTL(interval time.Duration) int64 {
+	ttl := (interval - interval/10).Milliseconds()
+	if ttl < 1 {
+		return 1
+	}
+	return ttl
 }
 
 // runStalledCheck invokes moveStalledJobsToWait once.
 func (w *Worker) runStalledCheck() error {
 	now := time.Now().UnixMilli()
-	maxCheckMs := w.cfg.stalledInterval.Milliseconds()
 	keys := w.keys.moveStalledKeys()
 	_, err := w.scripts.Run(
 		w.runCtx,
@@ -656,7 +685,7 @@ func (w *Worker) runStalledCheck() error {
 		w.cfg.maxStalledCount,
 		w.keys.prefix,
 		now,
-		maxCheckMs,
+		stalledCheckTTL(w.cfg.stalledInterval),
 	)
 	if err != nil && !errors.Is(err, context.Canceled) {
 		return fmt.Errorf("moveStalledJobsToWait: %w", err)
