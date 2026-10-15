@@ -165,23 +165,7 @@ func TestInterop_Mutation_RetryJob(t *testing.T) {
 	require.NoError(t, err)
 
 	// Phase 1: drive to failed via an mkq handler that always errors.
-	failed := make(chan struct{})
-	w1, err := mkq.Process(queue, func(_ context.Context, _ *mkq.Job[interopPayload]) (any, error) {
-		select {
-		case failed <- struct{}{}:
-		default:
-		}
-		return nil, assertionErr("intentional fail")
-	}, mkq.WithIdlePollInterval(20*time.Millisecond))
-	require.NoError(t, err)
-	<-failed
-	rdb := rawClient(t)
-	base := prefix + ":" + queueName + ":"
-	waitFor(t, ctx, 50*time.Millisecond, func() bool {
-		v, _ := rdb.ZScore(ctx, base+"failed", addedJob.ID).Result()
-		return v > 0
-	})
-	require.NoError(t, w1.Stop(context.Background()))
+	failInteropJobOnce(t, ctx, queue, prefix+":"+queueName+":", addedJob.ID)
 
 	// Phase 2: BullMQ confirms failed.
 	var beforeRetry struct {
@@ -200,6 +184,68 @@ func TestInterop_Mutation_RetryJob(t *testing.T) {
 	}
 	runNodeInspector(t, prefix, queueName, &afterRetry, "getState", addedJob.ID)
 	assert.Equal(t, "waiting", afterRetry.State, "BullMQ Job.getState must reflect mkq's RetryJob")
+}
+
+// TestInterop_Mutation_RetryJob_Prioritized: a failed job that carries
+// a priority goes back to prioritized on mkq RetryJob, and BullMQ TS
+// (6.3.15, reprocessJob-9) reports it as "prioritized", the same place
+// its own Job.retry puts it.
+func TestInterop_Mutation_RetryJob_Prioritized(t *testing.T) {
+	prefix := uniquePrefix(t)
+	const queueName = "mut"
+	c := newClient(t, prefix)
+	queue := mkq.Define[interopPayload](c, queueName)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	addedJob, err := queue.Add(ctx, interopPayload{Inbox: "retry-prioritized"}, mkq.WithPriority(3))
+	require.NoError(t, err)
+
+	failInteropJobOnce(t, ctx, queue, prefix+":"+queueName+":", addedJob.ID)
+
+	require.NoError(t, queue.RetryJob(ctx, addedJob.ID))
+
+	var afterRetry struct {
+		State string `json:"state"`
+	}
+	runNodeInspector(t, prefix, queueName, &afterRetry, "getState", addedJob.ID)
+	assert.Equal(t, "prioritized", afterRetry.State, "BullMQ must see the retried job in prioritized")
+
+	var listed struct {
+		IDs []string `json:"ids"`
+	}
+	runNodeInspector(t, prefix, queueName, &listed, "getJobs", "prioritized", "0", "-1")
+	assert.Equal(t, []string{addedJob.ID}, listed.IDs)
+}
+
+// failInteropJobOnce drives jobID to the failed ZSET with an mkq
+// worker whose handler always errors, then stops that worker. The
+// channel is buffered so the handler's non-blocking send is never lost
+// when it fires before the test goroutine starts receiving.
+func failInteropJobOnce(t *testing.T, ctx context.Context, queue *mkq.Queue[interopPayload], base, jobID string) {
+	t.Helper()
+	failed := make(chan struct{}, 1)
+	w, err := mkq.Process(queue, func(_ context.Context, _ *mkq.Job[interopPayload]) (any, error) {
+		select {
+		case failed <- struct{}{}:
+		default:
+		}
+		return nil, assertionErr("intentional fail")
+	}, mkq.WithIdlePollInterval(20*time.Millisecond))
+	require.NoError(t, err)
+	select {
+	case <-failed:
+	case <-ctx.Done():
+		_ = w.Stop(context.Background())
+		t.Fatalf("job %s was not handled before the deadline: %v", jobID, ctx.Err())
+	}
+	rdb := rawClient(t)
+	waitFor(t, ctx, 50*time.Millisecond, func() bool {
+		v, _ := rdb.ZScore(ctx, base+"failed", jobID).Result()
+		return v > 0
+	})
+	require.NoError(t, w.Stop(context.Background()))
 }
 
 // assertionErr is a tiny error helper kept outside the test to avoid

@@ -30,7 +30,7 @@ func TestPreprocess_VendoredEntryPoints(t *testing.T) {
 		"removeJob-2",
 		"drain-5",
 		"promote-9",
-		"reprocessJob-7",
+		"reprocessJob-9",
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
