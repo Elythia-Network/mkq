@@ -8,6 +8,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Go 1.27.3. The `go` directive moves to `1.27.3` to pick up the standard
+  library security fix in `crypto/x509` (GO-2026-6809), which govulncheck
+  reported as reachable on 1.27.2 (#143).
 - The pinned BullMQ moves from 6.3.8 to 6.3.15 (submodule, interop and
   bench). Between 6.3.8 and 6.3.11 BullMQ did not touch `src/commands/`.
   6.3.13 moved the flow-child handling of `reprocessJob` into the new
