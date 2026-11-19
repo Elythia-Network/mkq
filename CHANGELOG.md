@@ -53,6 +53,17 @@ project adheres to [Semantic Versioning](https://semver.org/).
   setup: while attempts keep failing, the gap between retries grows to at
   most 5 seconds instead of staying at 100ms, so a worker can take up to
   5 seconds to resume after a longer outage.
+- An idle dispatcher whose marker wait (BZPOPMIN) fails no longer retries
+  at once. It used to drop the error and go straight back to the dequeue,
+  so where only blocking commands fail (an ACL that forbids them, or a
+  proxy that does not pass them) it kept hitting Redis without a pause.
+  It now sleeps the same way as after a failed dequeue (starting at the
+  shorter of `IdlePollInterval` and 1 second, doubling, capped at 5
+  seconds, and not past a delayed job already known when the sleep
+  starts) and resets once a marker wait works again. A timeout is not a
+  failure. The first failure of a run is logged as a warning, and the
+  recovery as info. Where BZPOPMIN never works, jobs are now picked up
+  up to 5 seconds late instead of Redis being hit without a pause (#159).
 
 ## [1.5.1] - 2026-10-15
 
