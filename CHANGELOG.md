@@ -31,6 +31,20 @@ project adheres to [Semantic Versioning](https://semver.org/).
   without a priority still go back to the wait list, and a retried flow
   child is still moved back into its parent's dependencies as before.
 
+### Fixed
+
+- A dispatcher whose dequeue attempt fails no longer sleeps for
+  `IdlePollInterval`. That sleep is a plain timer the marker push cannot
+  cut short, so a worker with a long `IdlePollInterval` stopped picking
+  up jobs for that long after a brief Redis outage. The sleep now starts
+  at `IdlePollInterval` or 1 second, whichever is shorter, doubles while
+  attempts keep failing, caps at 5 seconds, and resets after an attempt
+  succeeds (#154). A zero or negative `IdlePollInterval` starts at 100ms
+  instead of retrying without a pause. This also changes the default
+  setup: while attempts keep failing, the gap between retries grows to at
+  most 5 seconds instead of staying at 100ms, so a worker can take up to
+  5 seconds to resume after a longer outage.
+
 ## [1.5.1] - 2026-10-15
 
 ### Changed

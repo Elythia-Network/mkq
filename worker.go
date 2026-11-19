@@ -339,6 +339,35 @@ const maxIdleWait = 30 * time.Second
 // overshoot するので、precise sleep を使わなければならない。
 const markerWaitFloor = time.Second
 
+// errorWaitStart caps the first sleep after a failed dequeue attempt.
+//
+// **エラーの後の眠りを idlePollInterval から切り離す (#154)。** この眠りは
+// marker では起きないただの timer なので、idlePollInterval をそのまま使うと、
+// 待機の間隔を延ばした worker は Redis の瞬断の後、その長さだけジョブを取らない
+// (全 dispatcher が同時にエラーを受けて一斉に眠る)。idlePollInterval がこれより
+// 短ければ、そちらから始める (既定の 100ms の利用者は、単発の失敗の後の戻りが
+// 今までどおり速い。続けて失敗すると、既定の利用者でも errorWaitMax まで伸びる)。
+const errorWaitStart = time.Second
+
+// errorWaitMax caps the sleep between consecutive failed dequeue attempts.
+// 連続して失敗する間は倍にしていき、hot-loop を防ぐ。Redis が戻ってから
+// 取得を再開するまでの遅れは、最大でこの長さ。
+const errorWaitMax = 5 * time.Second
+
+// firstErrorWait is the sleep after the first failed dequeue attempt.
+func firstErrorWait(idlePollInterval time.Duration) time.Duration {
+	if idlePollInterval <= 0 {
+		return defaultIdlePollInterval
+	}
+	return min(idlePollInterval, errorWaitStart)
+}
+
+// nextErrorWait doubles the sleep after another failed attempt, capped at
+// errorWaitMax.
+func nextErrorWait(cur time.Duration) time.Duration {
+	return min(cur*2, errorWaitMax)
+}
+
 // nextIdleWait doubles the marker wait after an idle wake-up, capped at
 // maxIdleWait. base が上限を超えている場合は base を尊重する (運用者が明示
 // 設定した値を勝手に縮めない)。
@@ -454,6 +483,8 @@ func (w *Worker) dispatchLoop(handlerAny any) {
 	// Lua が push するので即座に起きる。伸ばして効くのは「空振りで起きて
 	// tryOnce を撃つ」頻度だけ。
 	idleWait := w.cfg.idlePollInterval
+	// errorWait は取り出しが失敗した後の眠り。成功したら最初に戻す (#154)。
+	errorWait := firstErrorWait(w.cfg.idlePollInterval)
 	for {
 		if w.runCtx.Err() != nil {
 			// **Drain のときは prefetch 済みを取りこぼさない。** 直前の
@@ -490,17 +521,20 @@ func (w *Worker) dispatchLoop(handlerAny any) {
 			// stalledLoop と同じ best-effort パターン: 単発失敗は次の
 			// 走査で recover できるが、連続失敗時に黙ってジョブが滞留する
 			// ことを避けるため Logger 経由で ops に出す。
-			// エラー時は marker を待たずに idle interval だけ眠る:
-			// 連続失敗時に hot-loop しないため。
+			// エラー時は marker を待たずに errorWait だけ眠る: 連続失敗時に
+			// hot-loop しないため。marker を待たないのは、Redis が落ちている
+			// 間の BZPOPMIN はすぐエラーで返り、眠りにならないから。
 			w.logger.Warn("mkq: dispatch attempt failed",
 				slog.String(AttrQueue, w.queueName),
 				slog.String(AttrError, err.Error()),
 			)
-			if !w.sleep(w.cfg.idlePollInterval) {
+			if !w.sleep(errorWait) {
 				return
 			}
+			errorWait = nextErrorWait(errorWait)
 			continue
 		}
+		errorWait = firstErrorWait(w.cfg.idlePollInterval)
 		if processed {
 			// 仕事があったので待ちを最短に戻す。
 			idleWait = w.cfg.idlePollInterval
