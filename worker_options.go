@@ -72,6 +72,12 @@ func WithWorkerName(name string) WorkerOption {
 // WithConcurrency(N) callers should ensure their go-redis
 // UniversalOptions.PoolSize is >= N + a few; the default
 // 10*GOMAXPROCS is plenty for concurrencies up to a few dozen.
+//
+// The sleep after a failed dequeue attempt does not follow this value
+// beyond 1 second: it starts at the shorter of the two (100ms when this
+// value is zero or negative), doubles while attempts keep failing and
+// caps at 5 seconds, so a long interval does not stall the worker after
+// a brief Redis outage.
 func WithIdlePollInterval(d time.Duration) WorkerOption {
 	return func(c *workerConfig) { c.idlePollInterval = d }
 }
