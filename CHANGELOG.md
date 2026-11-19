@@ -8,6 +8,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Go 1.27.4. The `go` directive moves to `1.27.4` to pick up the standard
+  library security fix in `net/http` (GO-2026-6859), which govulncheck
+  reported as reachable on 1.27.3 (#155).
 - Go 1.27.3. The `go` directive moves to `1.27.3` to pick up the standard
   library security fix in `crypto/x509` (GO-2026-6809), which govulncheck
   reported as reachable on 1.27.2 (#143).
