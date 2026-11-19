@@ -8,6 +8,19 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- The pinned BullMQ moves from 6.4.0 to 6.7.8 (submodule, interop and
+  bench). Nine vendored scripts changed. `getCounts` counts only the
+  delayed jobs due before a timestamp when its first argument is a
+  number (taskforcesh/bullmq#5026); mkq passes bucket names only, so
+  its counts are unchanged. The add scripts take a flow argument that
+  holds the parent back until every child is added
+  (taskforcesh/bullmq#4988) and accept a `reschedule` deduplication
+  option (taskforcesh/bullmq#5048); mkq passes neither. When a parent
+  is removed along with its last child, its deduplication key is now
+  found from the parent's own `deid` and removed only while it still
+  points at that parent; before, it was looked up from the child's
+  `deid` and could remove an unrelated key (taskforcesh/bullmq#5078).
+  This matters for flows created by BullMQ on a shared queue (#162).
 - The pinned BullMQ moves from 6.3.15 to 6.4.0 (submodule, interop and
   bench). Of the vendored Lua, only the include `storeDeduplicatedNextJob`
   changed: the `keepLastIfActive` deduplication now looks the active job
