@@ -55,6 +55,9 @@ func TestInspector_Counts_PerState(t *testing.T) {
 		require.NoError(t, err)
 	}
 	// 2 delayed jobs (10 minutes out so they don't promote during the test).
+	// BullMQ 6.7 の getCounts は ARGV[1] が数値なら、その時刻より前の delayed
+	// だけを数える (#162)。mkq は状態の名前だけを渡すので、先の delayed も
+	// 数えに入ること。
 	for range 2 {
 		_, err := queue.Add(ctx, testPayload{Inbox: "later"}, mkq.WithDelay(10*time.Minute))
 		require.NoError(t, err)
