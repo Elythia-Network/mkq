@@ -8,6 +8,15 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- The pinned BullMQ moves from 6.3.15 to 6.4.0 (submodule, interop and
+  bench). Of the vendored Lua, only the include `storeDeduplicatedNextJob`
+  changed: the `keepLastIfActive` deduplication now looks the active job
+  up with `LPOS` instead of reading the whole active list with `LRANGE`,
+  falling back to the old scan where `LPOS` is unavailable
+  (taskforcesh/bullmq#4956). mkq does not expose `keepLastIfActive`, so
+  jobs added through mkq do not take this path. The new relay scripts
+  (taskforcesh/bullmq#4904) do not touch queue keys and are not vendored
+  (#158).
 - Go 1.27.4. The `go` directive moves to `1.27.4` to pick up the standard
   library security fix in `net/http` (GO-2026-6859), which govulncheck
   reported as reachable on 1.27.3 (#155).
