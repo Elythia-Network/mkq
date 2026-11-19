@@ -6,6 +6,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-11-19
+
 ### Changed
 
 - The pinned BullMQ moves from 6.4.0 to 6.7.8 (submodule, interop and
@@ -840,7 +842,8 @@ fix bugs without breaking existing callers.
   TS pull ahead 1.24× at concurrency=16. Documented as the
   Redis-client-level gap in `bench/README.md`.
 
-[Unreleased]: https://github.com/Elythia-Network/mkq/compare/v1.5.1...HEAD
+[Unreleased]: https://github.com/Elythia-Network/mkq/compare/v1.5.2...HEAD
+[1.5.2]: https://github.com/Elythia-Network/mkq/releases/tag/v1.5.2
 [1.5.1]: https://github.com/Elythia-Network/mkq/releases/tag/v1.5.1
 [1.5.0]: https://github.com/Elythia-Network/mkq/releases/tag/v1.5.0
 [1.4.0]: https://github.com/Elythia-Network/mkq/releases/tag/v1.4.0
