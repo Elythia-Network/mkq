@@ -64,9 +64,9 @@ func WithWorkerName(name string) WorkerOption {
 // with a warning), so the effective floor is 1s regardless of what
 // you pass here. Sub-second values are harmless — they still drive
 // the dispatch-latency improvement (marker push wakes within ms) but
-// the BZPopMin ceiling stays at 1s. ctx cancellation is unaffected:
-// Worker.Stop returns immediately because go-redis honours ctx on
-// blocking commands.
+// the BZPopMin ceiling stays at 1s. Worker.Stop wakes blocked
+// dispatchers through a per-worker wake key, so it does not wait out
+// this timeout. Zero or a negative value means the default (100ms).
 //
 // A blocked BZPopMin holds one Redis connection per worker slot, so
 // WithConcurrency(N) callers should ensure their go-redis
@@ -74,12 +74,11 @@ func WithWorkerName(name string) WorkerOption {
 // 10*GOMAXPROCS is plenty for concurrencies up to a few dozen.
 //
 // The sleep after a failed dequeue attempt does not follow this value
-// beyond 1 second: it starts at the shorter of the two (100ms when this
-// value is zero or negative), doubles while attempts keep failing and
-// caps at 5 seconds, so a long interval does not stall the worker after
-// a brief Redis outage. A failed marker wait (BZPOPMIN) backs off the
-// same way, so where blocking commands are not allowed jobs are picked
-// up up to 5 seconds late.
+// beyond 1 second: it starts at the shorter of the two, doubles while
+// attempts keep failing and caps at 5 seconds, so a long interval does
+// not stall the worker after a brief Redis outage. A failed marker wait
+// (BZPOPMIN) backs off the same way, so where blocking commands are not
+// allowed jobs are picked up up to 5 seconds late.
 func WithIdlePollInterval(d time.Duration) WorkerOption {
 	return func(c *workerConfig) { c.idlePollInterval = d }
 }
