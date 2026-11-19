@@ -485,6 +485,62 @@ func (w *Worker) dispatchLoop(handlerAny any) {
 	idleWait := w.cfg.idlePollInterval
 	// errorWait は取り出しが失敗した後の眠り。成功したら最初に戻す (#154)。
 	errorWait := firstErrorWait(w.cfg.idlePollInterval)
+	// markerErrorWait は marker 待ち (BZPOPMIN) が失敗した後の眠り (#159)。
+	markerErrorWait := firstErrorWait(w.cfg.idlePollInterval)
+	markerFailing := false
+	// waitMarker は marker を待ち、BZPOPMIN が失敗したら眠る。sleepCap が
+	// 正なら、眠りをその長さで切る (眠り始めた時点で分かっている delayed job の
+	// 期限を過ぎて眠らない)。
+	// runCtx が cancel されたら false を返す。
+	//
+	// **失敗したらすぐに戻らない (#159)。** BZPOPMIN だけが失敗し続ける環境
+	// (ACL でブロックするコマンドを禁じている、ブロックするコマンドを通さない
+	// proxy を挟んでいる) では、取り出しは成功して空なので errorWait に入らず、
+	// 取り出しと BZPOPMIN を眠らずに繰り返して Redis を叩き続けていた。その代わり
+	// この環境では、ジョブの取得が眠りの分 (最大 errorWaitMax) 遅れる。
+	//
+	// Warn は続けて失敗するうちの最初の 1 回だけ出す。この環境では失敗が止まらず、
+	// 毎回出すと dispatcher の数だけ 5 秒ごとに出続ける。
+	waitMarker := func(timeout, sleepCap time.Duration) bool {
+		if timeout <= 0 {
+			// BZPOPMIN を撃たないので、成功とも失敗とも数えない
+			// (IdlePollInterval が 0 以下のとき)。
+			return w.runCtx.Err() == nil
+		}
+		err := w.awaitMarker(timeout)
+		if w.runCtx.Err() != nil {
+			return false
+		}
+		if err == nil {
+			if markerFailing {
+				markerFailing = false
+				w.logger.Info("mkq: marker wait recovered", slog.String(AttrQueue, w.queueName))
+			}
+			markerErrorWait = firstErrorWait(w.cfg.idlePollInterval)
+			return true
+		}
+		if !markerFailing {
+			markerFailing = true
+			w.logger.Warn("mkq: marker wait failed",
+				slog.String(AttrQueue, w.queueName),
+				slog.String(AttrError, err.Error()),
+			)
+		} else {
+			w.logger.Debug("mkq: marker wait failed",
+				slog.String(AttrQueue, w.queueName),
+				slog.String(AttrError, err.Error()),
+			)
+		}
+		sleep := markerErrorWait
+		if sleepCap > 0 {
+			sleep = min(sleep, sleepCap)
+		}
+		if !w.sleep(sleep) {
+			return false
+		}
+		markerErrorWait = nextErrorWait(markerErrorWait)
+		return true
+	}
 	for {
 		if w.runCtx.Err() != nil {
 			// **Drain のときは prefetch 済みを取りこぼさない。** 直前の
@@ -532,6 +588,11 @@ func (w *Worker) dispatchLoop(handlerAny any) {
 				return
 			}
 			errorWait = nextErrorWait(errorWait)
+			// Redis 全体が落ちている。戻った後の marker 待ちの失敗は、この停止の
+			// 名残なので、伸びた眠りを引き継がない。Warn を出したかどうか
+			// (markerFailing) は引き継ぐ。停止の間は取り出しの失敗の Warn が出て
+			// いるので、戻った後の marker 待ちの失敗まで Warn にしなくてよい。
+			markerErrorWait = firstErrorWait(w.cfg.idlePollInterval)
 			continue
 		}
 		errorWait = firstErrorWait(w.cfg.idlePollInterval)
@@ -574,13 +635,13 @@ func (w *Worker) dispatchLoop(handlerAny any) {
 			if delay > maxIdleWait {
 				delay = maxIdleWait
 			}
-			if !w.awaitMarker(delay) {
+			if !waitMarker(delay, delay) {
 				return
 			}
 			continue
 		}
 		// Idle queue: wake on marker push or timeout.
-		if !w.awaitMarker(idleWait) {
+		if !waitMarker(idleWait, 0) {
 			return
 		}
 		idleWait = nextIdleWait(idleWait, w.cfg.idlePollInterval)
@@ -625,11 +686,10 @@ func (w *Worker) sleep(d time.Duration) bool {
 // nudges the marker key — see wakeMarkerWaiters. An earlier version of
 // this comment claimed the opposite; it was wrong.
 //
-// Any error response (redis.Nil for timeout, context.Canceled for
-// shutdown, transient network glitches) becomes a "wake and retry"
-// signal: tryOnce is idempotent so spurious wakeups are cheap, and a
-// real Redis outage will surface in the next tryOnce call. Returns
-// false when runCtx is cancelled so the dispatcher can exit cleanly.
+// A timeout (redis.Nil) and a cancelled runCtx are not errors: the
+// dispatcher wakes and retries, and checks runCtx itself. Any other
+// error is returned so the dispatcher can back off instead of retrying
+// at once (#159).
 //
 // Connection-pool sizing note: each worker slot occupies one Redis
 // connection while blocked here. A WithConcurrency(N) worker plus
@@ -637,9 +697,9 @@ func (w *Worker) sleep(d time.Duration) bool {
 // go-redis defaults to 10*GOMAXPROCS which is comfortable for
 // concurrencies up to a few dozen; very high concurrency callers
 // should bump UniversalOptions.PoolSize.
-func (w *Worker) awaitMarker(timeout time.Duration) bool {
+func (w *Worker) awaitMarker(timeout time.Duration) error {
 	if timeout <= 0 {
-		return w.runCtx.Err() == nil
+		return nil
 	}
 	if timeout < time.Second {
 		timeout = time.Second
@@ -648,8 +708,11 @@ func (w *Worker) awaitMarker(timeout time.Duration) bool {
 	// 起こしを同じキューの別 worker に横取りされる。wakeKey はこの Worker
 	// インスタンス専用なので、押した分だけ確実にこの worker が起きる。
 	// marker を先に置くのは、仕事がある場合をそちらで拾わせるため。
-	_ = w.rdb.BZPopMin(w.runCtx, timeout, w.keys.marker, w.wakeKey).Err()
-	return w.runCtx.Err() == nil
+	err := w.rdb.BZPopMin(w.runCtx, timeout, w.keys.marker, w.wakeKey).Err()
+	if err == nil || errors.Is(err, redis.Nil) || w.runCtx.Err() != nil {
+		return nil
+	}
+	return err
 }
 
 // stalledLoop runs moveStalledJobsToWait once at start and then again

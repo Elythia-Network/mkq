@@ -77,7 +77,9 @@ func WithWorkerName(name string) WorkerOption {
 // beyond 1 second: it starts at the shorter of the two (100ms when this
 // value is zero or negative), doubles while attempts keep failing and
 // caps at 5 seconds, so a long interval does not stall the worker after
-// a brief Redis outage.
+// a brief Redis outage. A failed marker wait (BZPOPMIN) backs off the
+// same way, so where blocking commands are not allowed jobs are picked
+// up up to 5 seconds late.
 func WithIdlePollInterval(d time.Duration) WorkerOption {
 	return func(c *workerConfig) { c.idlePollInterval = d }
 }
