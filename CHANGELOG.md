@@ -61,8 +61,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
   up jobs for that long after a brief Redis outage. The sleep now starts
   at `IdlePollInterval` or 1 second, whichever is shorter, doubles while
   attempts keep failing, caps at 5 seconds, and resets after an attempt
-  succeeds (#154). A zero or negative `IdlePollInterval` starts at 100ms
-  instead of retrying without a pause. This also changes the default
+  succeeds (#154). This also changes the default
   setup: while attempts keep failing, the gap between retries grows to at
   most 5 seconds instead of staying at 100ms, so a worker can take up to
   5 seconds to resume after a longer outage.
@@ -77,6 +76,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
   failure. The first failure of a run is logged as a warning, and the
   recovery as info. Where BZPOPMIN never works, jobs are now picked up
   up to 5 seconds late instead of Redis being hit without a pause (#159).
+- A zero or negative `IdlePollInterval` now means the default (100ms).
+  An idle worker given 0 used to retry the dequeue without a pause,
+  because the marker wait stayed at 0 and returned without issuing
+  BZPOPMIN (#163).
 
 ## [1.5.1] - 2026-10-15
 

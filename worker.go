@@ -161,6 +161,12 @@ func Process[T any](q *Queue[T], h Handler[T], opts ...WorkerOption) (*Worker, e
 	if cfg.concurrency < 1 {
 		cfg.concurrency = 1
 	}
+	// **0 以下は既定にする (#163)。** そのままだと marker 待ちの上限が 0 のまま
+	// 倍にしても 0 で、awaitMarker は BZPOPMIN を撃たずに戻るので、待機中の
+	// dispatcher が眠らずに取り出しを繰り返していた。
+	if cfg.idlePollInterval <= 0 {
+		cfg.idlePollInterval = defaultIdlePollInterval
+	}
 	if cfg.workerName == "" {
 		cfg.workerName = defaultWorkerName()
 	}
@@ -355,6 +361,8 @@ const errorWaitStart = time.Second
 const errorWaitMax = 5 * time.Second
 
 // firstErrorWait is the sleep after the first failed dequeue attempt.
+// Process normalizes a non-positive interval (#163); the guard below is
+// kept for direct callers.
 func firstErrorWait(idlePollInterval time.Duration) time.Duration {
 	if idlePollInterval <= 0 {
 		return defaultIdlePollInterval
@@ -503,8 +511,8 @@ func (w *Worker) dispatchLoop(handlerAny any) {
 	// 毎回出すと dispatcher の数だけ 5 秒ごとに出続ける。
 	waitMarker := func(timeout, sleepCap time.Duration) bool {
 		if timeout <= 0 {
-			// BZPOPMIN を撃たないので、成功とも失敗とも数えない
-			// (IdlePollInterval が 0 以下のとき)。
+			// BZPOPMIN を撃たないので、成功とも失敗とも数えない。Process が
+			// IdlePollInterval を正にする (#163) ので通常は来ないが、防御として残す。
 			return w.runCtx.Err() == nil
 		}
 		err := w.awaitMarker(timeout)
