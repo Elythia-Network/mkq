@@ -12,6 +12,7 @@ import (
 	"runtime/debug"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -124,6 +125,10 @@ type Worker struct {
 	markerMu      sync.Mutex
 	markerIdle    sync.Cond
 	markerWaiters int
+
+	// delayOwners counts the dispatchers that hold the delay marker and
+	// wait for the next delayed job to fall due (#150). Tests read it.
+	delayOwners atomic.Int64
 }
 
 // queueKeys is a snapshot of the per-queue Redis keys consumed by
@@ -238,6 +243,7 @@ func Process[T any](q *Queue[T], h Handler[T], opts ...WorkerOption) (*Worker, e
 	}
 
 	shim := newHandlerShim(q, h)
+	w.restoreDelayMarker()
 	for i := 0; i < cfg.concurrency; i++ {
 		w.run.Add(1)
 		go w.dispatchLoop(shim)
@@ -514,6 +520,55 @@ func (w *Worker) handoffMarker() {
 	_ = w.rdb.ZAdd(ctx, w.keys.marker, members...).Err()
 }
 
+// handOffDelay puts the delay marker back with score ts, so that another
+// dispatcher takes over waiting for the next delayed job (#150).
+//
+// Best-effort: without the marker the other dispatchers still pick the
+// job up once their idle wait runs out.
+func (w *Worker) handOffDelay(ts int64) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_ = addDelayMarkerLT(ctx, w.rdb, w.keys.marker, ts)
+}
+
+// addDelayMarkerLT adds the delay marker "1" with score ts, or lowers the
+// score of the one already there.
+//
+// **LT で置き、期限を後ろへずらさない。** より早い delayed job の marker が
+// もう置かれていれば、上書きするとその期限を誰も待たなくなる。ts が古い
+// (期限の過ぎた job を取った) ときは、取った dispatcher がすぐ取り出し、本当の
+// 次の期限を知って担当になる。
+func addDelayMarkerLT(ctx context.Context, rdb redis.UniversalClient, marker string, ts int64) error {
+	return rdb.ZAddArgs(ctx, marker, redis.ZAddArgs{
+		LT:      true,
+		Members: []redis.Z{{Score: float64(ts), Member: "1"}},
+	}).Err()
+}
+
+// restoreDelayMarker adds the delay marker for the soonest delayed job,
+// if there is one.
+func restoreDelayMarker(ctx context.Context, rdb redis.UniversalClient, delayed, marker string) error {
+	next, err := rdb.ZRangeWithScores(ctx, delayed, 0, 0).Result()
+	if err != nil || len(next) == 0 {
+		return err
+	}
+	// delayed の score は「期限の ms * 0x1000 + 同じ ms の中の順番」。
+	return addDelayMarkerLT(ctx, rdb, marker, int64(next[0].Score)/0x1000)
+}
+
+// restoreDelayMarker puts the delay marker back when a Worker starts, in
+// case the dispatcher that held it is gone without handing it off (#150).
+//
+// 担当の dispatcher が Stop を経ずに消えると (プロセスの異常終了など)、期限を
+// 待つ dispatcher がいなくなり、期限の来た job はアイドルの待ちが切れるまで
+// 残る。起動のたびに置き直し、再起動で戻す。担当がまだいて、置いた marker を
+// 担当でない dispatcher が取ると、担当が 1 本増える。
+func (w *Worker) restoreDelayMarker() {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_ = restoreDelayMarker(ctx, w.rdb, w.keys.delayed, w.keys.marker)
+}
+
 // pausedOrMaxed mirrors BullMQ's isQueuePausedOrMaxed: meta holds the
 // HMGET of "paused" and "concurrency" on the queue's meta key.
 func pausedOrMaxed(meta []any, active int64) bool {
@@ -571,9 +626,11 @@ type prefetchedJob struct {
 //   - prefetched job already in hand (from previous moveToFinished
 //     fetchNext): consume directly, skip moveToActive
 //   - rate-limited (Lua returned a cooldown ms): precise sleep
-//   - delayed work scheduled (Lua returned the next-due ms): precise
-//     sleep until that timestamp (BZPopMin's 1s floor would overshoot
-//     sub-second delayed targets like exponential-backoff retries)
+//   - delayed work scheduled (Lua returned the next-due ms): if this
+//     dispatcher took the delay marker, precise sleep until that
+//     timestamp (BZPopMin's 1s floor would overshoot sub-second delayed
+//     targets like exponential-backoff retries); otherwise one wait
+//     for the longer of 30 seconds and IdlePollInterval
 //   - truly idle: BZPopMin on the BullMQ marker key, waking ms after
 //     a new wait/prioritized job lands
 //
@@ -599,6 +656,42 @@ func (w *Worker) dispatchLoop(handlerAny any) {
 	// markerErrorWait は marker 待ち (BZPOPMIN) が失敗した後の眠り (#159)。
 	markerErrorWait := firstErrorWait(w.cfg.idlePollInterval)
 	markerFailing := false
+	// **期限まで待つのは、遅延の marker ("1") を取った dispatcher だけ (#150)。**
+	// 以前は、取り出しで次の期限を知った dispatcher が全員その期限まで待ち、
+	// 期限 1 件で worker 4 本・並行数 4 の 16 本がそろって起きていた。marker を
+	// 取った dispatcher (担当) だけが待ち、残りは期限を待たずに上限 (30 秒と
+	// 待機の間隔の長い方) まで眠る。
+	//
+	// delayOwned は担当の期限 (ms) で、0 なら担当ではない。
+	//
+	// **担当は、delayed が空になるか、ジョブを取って引き継ぐまで降りない。**
+	// 期限が来てもジョブを取れなかった担当 (担当でない dispatcher が fetchNext
+	// の連鎖などで先に取った、ジョブが消された) が降りると、次の期限を誰も待た
+	// ず、アイドルの待ちが切れるまで遅れる。担当が 2 本以上いる (下の marker の
+	// 置き直しを担当でない dispatcher が取った) ときは、そのまま残る。担当が
+	// 増えるのは marker が置かれ、担当でない dispatcher が取ったときだけ。担当が
+	// 取れば増えないが、すでに重複した担当は、delayed が空になるか、担当の
+	// 引き継ぎの marker を別の担当が取るまで減らない。それでも、期限に起きる
+	// 本数は以前 (期限を知った全員) を超えない。
+	var delayOwned int64
+	setDelayOwned := func(ts int64) {
+		switch {
+		case delayOwned == 0 && ts > 0:
+			w.delayOwners.Add(1)
+		case delayOwned > 0 && ts == 0:
+			w.delayOwners.Add(-1)
+		}
+		delayOwned = ts
+	}
+	defer setDelayOwned(0)
+	// 担当のままジョブを取ったら、期限の待ちを引き継ぐ。取ったジョブを処理する
+	// あいだ誰も期限を待たなくなるため。
+	onAcquire := func() {
+		if delayOwned > 0 {
+			w.handOffDelay(delayOwned)
+			setDelayOwned(0)
+		}
+	}
 	// waitMarker は marker を待ち、BZPOPMIN が失敗したら眠る。sleepCap が
 	// 正なら、眠りをその長さで切る (眠り始めた時点で分かっている delayed job の
 	// 期限を過ぎて眠らない)。
@@ -618,7 +711,10 @@ func (w *Worker) dispatchLoop(handlerAny any) {
 			// IdlePollInterval を正にする (#163) ので通常は来ないが、防御として残す。
 			return w.runCtx.Err() == nil
 		}
-		err := w.awaitMarker(timeout)
+		ts, err := w.awaitMarker(timeout)
+		if ts > 0 && (delayOwned == 0 || ts < delayOwned) {
+			setDelayOwned(ts)
+		}
 		if w.runCtx.Err() != nil {
 			return false
 		}
@@ -682,7 +778,7 @@ func (w *Worker) dispatchLoop(handlerAny any) {
 			prefetched = w.runJob(handlerAny, pj.token, pj.jobID, pj.jobMap)
 			continue
 		}
-		processed, gotPrefetched, expireTimeMs, nextDelayedTs, err := w.tryOnce(handlerAny)
+		processed, gotPrefetched, expireTimeMs, nextDelayedTs, err := w.tryOnce(handlerAny, onAcquire)
 		if err != nil {
 			// 取得や lua 失敗は Warn でログ (worker は止めない)。
 			// stalledLoop と同じ best-effort パターン: 単発失敗は次の
@@ -722,7 +818,16 @@ func (w *Worker) dispatchLoop(handlerAny any) {
 			}
 			continue
 		}
-		if nextDelayedTs > 0 {
+		if nextDelayedTs == 0 {
+			setDelayOwned(0)
+		}
+		// marker 待ちが失敗し続けている間は、marker を取れず担当が決まらない。
+		// その間は以前どおり各自が期限まで待つ (#159 の環境で、期限を眠り
+		// 過ごさないため)。
+		if nextDelayedTs > 0 && (delayOwned > 0 || markerFailing) {
+			if delayOwned > 0 {
+				setDelayOwned(nextDelayedTs)
+			}
 			// 次 delayed job の絶対 ms timestamp が分かるので、その時刻
 			// まで待つ。delay <= 0 はもう due なので即時 retry。
 			delay := time.Until(time.UnixMilli(nextDelayedTs))
@@ -751,6 +856,18 @@ func (w *Worker) dispatchLoop(handlerAny any) {
 			// から 30 秒に縮んでいた。
 			delay = min(delay, max(maxIdleWait, w.cfg.idlePollInterval))
 			if !waitMarker(delay, delay) {
+				return
+			}
+			continue
+		}
+		if nextDelayedTs > 0 {
+			// 担当でない dispatcher は期限を待たない。アイドルの待ちを短い
+			// 値から伸ばし直すと、処理の直後に 1 秒ずつ起きて取り出しを撃ち
+			// 直す。以前は期限 (上限は下の値) を 1 回待っていたので、同じ上限
+			// で待つ。
+			// marker 待ちが失敗したときの眠りは期限で切る。#159 の環境で
+			// markerFailing が立つ前の 1 回目に、期限を眠り過ごさないため。
+			if !waitMarker(max(maxIdleWait, w.cfg.idlePollInterval), max(time.Until(time.UnixMilli(nextDelayedTs)), time.Millisecond)) {
 				return
 			}
 			continue
@@ -806,15 +923,18 @@ func (w *Worker) sleep(d time.Duration) bool {
 // error is returned so the dispatcher can back off instead of retrying
 // at once (#159).
 //
+// When the pop took the delay marker (member "1"), awaitMarker returns
+// its score, the ms timestamp of the next delayed job; otherwise 0.
+//
 // Connection-pool sizing note: each worker slot occupies one Redis
 // connection while blocked here. A WithConcurrency(N) worker plus
 // the queue's own per-call traffic typically wants pool size >= N+8.
 // go-redis defaults to 10*GOMAXPROCS which is comfortable for
 // concurrencies up to a few dozen; very high concurrency callers
 // should bump UniversalOptions.PoolSize.
-func (w *Worker) awaitMarker(timeout time.Duration) error {
+func (w *Worker) awaitMarker(timeout time.Duration) (int64, error) {
 	if timeout <= 0 {
-		return nil
+		return 0, nil
 	}
 	if timeout < time.Second {
 		timeout = time.Second
@@ -828,21 +948,27 @@ func (w *Worker) awaitMarker(timeout time.Duration) error {
 	w.markerMu.Lock()
 	if w.runCtx.Err() != nil {
 		w.markerMu.Unlock()
-		return nil
+		return 0, nil
 	}
 	w.markerWaiters++
 	w.markerMu.Unlock()
-	err := w.rdb.BZPopMin(w.runCtx, timeout, w.keys.marker, w.wakeKey).Err()
+	popped, err := w.rdb.BZPopMin(w.runCtx, timeout, w.keys.marker, w.wakeKey).Result()
 	w.markerMu.Lock()
 	w.markerWaiters--
 	if w.markerWaiters == 0 {
 		w.markerIdle.Broadcast()
 	}
 	w.markerMu.Unlock()
-	if err == nil || errors.Is(err, redis.Nil) || w.runCtx.Err() != nil {
-		return nil
+	if err == nil {
+		if popped.Key == w.keys.marker && popped.Member == "1" {
+			return int64(popped.Score), nil
+		}
+		return 0, nil
 	}
-	return err
+	if errors.Is(err, redis.Nil) || w.runCtx.Err() != nil {
+		return 0, nil
+	}
+	return 0, err
 }
 
 // stalledLoop runs moveStalledJobsToWait once at start and then again
@@ -933,7 +1059,9 @@ func (w *Worker) runStalledCheck() error {
 //     delayed job (0 = none queued) so the dispatcher can wake
 //     precisely on its target instead of overshooting via BZPopMin's
 //     1-second floor
-func (w *Worker) tryOnce(handlerAny any) (bool, *prefetchedJob, int64, int64, error) {
+//
+// onAcquire runs once a job is dequeued, before its handler.
+func (w *Worker) tryOnce(handlerAny any, onAcquire func()) (bool, *prefetchedJob, int64, int64, error) {
 	token := uuid.NewString()
 	now := time.Now().UnixMilli()
 
@@ -976,6 +1104,7 @@ func (w *Worker) tryOnce(handlerAny any) (bool, *prefetchedJob, int64, int64, er
 		return false, nil, expireTimeMs, nextDelayedTs, nil
 	}
 
+	onAcquire()
 	prefetched := w.runJob(handlerAny, token, jobID, jobMap)
 	return true, prefetched, 0, 0, nil
 }

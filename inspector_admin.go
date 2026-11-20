@@ -319,10 +319,24 @@ func (q *Queue[T]) Pause(ctx context.Context) error {
 // first call. Calling Resume again continues the drain from where it
 // stopped.
 //
-// Equivalent to BullMQ pause-7.lua with ARGV "resumed". Idempotent:
-// resuming a queue that is not paused is a no-op at the wire level.
+// Equivalent to BullMQ pause-7.lua with ARGV "resumed", followed by
+// re-adding the delay marker for the soonest delayed job (best-effort,
+// even when the resume itself fails; that error is still returned).
+// Idempotent: resuming a queue that is not paused does nothing beyond
+// that marker.
 func (q *Queue[T]) Resume(ctx context.Context) error {
-	return q.pauseResume(ctx, q.keys.Paused(), q.keys.Wait(), "resumed")
+	err := q.pauseResume(ctx, q.keys.Paused(), q.keys.Wait(), "resumed")
+	// **delayed の marker も置く (#150)。** Pause は marker を消し、pause-7.lua の
+	// resume は wait にジョブがあると "0" しか置かない。期限を待つのは "1" を
+	// 取った dispatcher だけなので、置かないと、wait を処理し終えた後に残りの
+	// delayed の期限を誰も待たず、アイドルの待ちが切れるまで遅れる。
+	//
+	// pauseResume が失敗しても置く。legacy の paused リストを吸い出しきれ
+	// なかったときなど、キューはもう再開していることがある。一時停止のままの
+	// キューに置いても、取った dispatcher の取り出しが空で返るだけで害は無い。
+	// 置けなくても Resume は失敗にしない。
+	_ = restoreDelayMarker(ctx, q.client.rdb, q.keys.Delayed(), q.keys.Marker())
+	return err
 }
 
 // pauseResume runs the vendored pause-7.lua. source/target are the

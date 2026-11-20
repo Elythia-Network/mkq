@@ -68,8 +68,17 @@ func WithWorkerName(name string) WorkerOption {
 // dispatchers through a per-worker wake key, so it does not wait out
 // this timeout. Zero or a negative value means the default (100ms).
 //
-// While a delayed job is pending, a dispatcher instead waits until that
-// job is due, for at most the longer of this value and 30 seconds.
+// While a delayed job is pending, the dispatcher that took the queue's
+// delay marker instead waits until that job is due, for at most the
+// longer of this value and 30 seconds. The other dispatchers do not wait
+// for the due time; they wait for that same longer value. When no
+// dispatcher holds the marker, a due job waits for up to that value,
+// unless a Worker on the queue starts or the queue is resumed through
+// mkq first. That happens when the holder exits without Stop or Drain
+// (for example, the process crashes), when it fails to put the marker
+// back because Redis is briefly unavailable, when BullMQ resumes the
+// queue or takes the marker, or when the queue reaches its global
+// concurrency limit.
 //
 // A blocked BZPopMin holds one Redis connection per worker slot, so
 // WithConcurrency(N) callers should ensure their go-redis
