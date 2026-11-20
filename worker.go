@@ -117,6 +117,13 @@ type Worker struct {
 	// the Worker struct to handler-completion time.
 	stopOnce sync.Once
 	stopDone chan struct{}
+
+	// markerMu guards markerWaiters, the number of dispatchers inside
+	// BZPopMin on the marker key. markerIdle is signalled when it drops to
+	// zero. handoffDelayedWait waits on it; see there.
+	markerMu      sync.Mutex
+	markerIdle    sync.Cond
+	markerWaiters int
 }
 
 // queueKeys is a snapshot of the per-queue Redis keys consumed by
@@ -194,6 +201,7 @@ func Process[T any](q *Queue[T], h Handler[T], opts ...WorkerOption) (*Worker, e
 		retryDelayOverride: cfg.retryDelayOverride,
 		rng:                rand.Float64,
 	}
+	w.markerIdle.L = &w.markerMu
 
 	// BZPopMin の awaitMarker は worker slot ごとに 1 connection を専有
 	// するため、concurrency >= pool size だと dispatch が他の Redis 呼び
@@ -320,6 +328,7 @@ func (w *Worker) beginShutdown() {
 		w.runCancel()
 		w.wakeDispatchers()
 		go func() {
+			w.handoffDelayedWait()
 			w.run.Wait()
 			// 全部戻ったら job ctx tree も畳む。Drain が成功した場合は
 			// ここを通らないと cancel node が worker の寿命ぶん残る。
@@ -430,6 +439,52 @@ func (w *Worker) wakeDispatchers() {
 		members[i] = redis.Z{Score: 0, Member: "stop:" + strconv.Itoa(i)}
 	}
 	_ = w.rdb.ZAdd(ctx, w.wakeKey, members...).Err()
+}
+
+// handoffDelayedWait re-adds the delay marker on shutdown when a delayed
+// job is queued, so that a dispatcher of another Worker on the same queue
+// takes over the wait for it.
+//
+// **期限を待つ dispatcher は、キュー全体で 1 つしかいないことがある (#150)。**
+// delayed job を積んだときの marker は、BZPOPMIN で 1 つの dispatcher だけが
+// 取る。取った dispatcher が期限まで待ち、残りは待機の間隔 (IdlePollInterval)
+// で眠ったまま。その dispatcher が Resize の縮小や Drain で止まると、期限が来ても
+// 誰も promote せず、残りが待機の間隔を待ち終えるまで遅れる (待機の間隔 20 秒、
+// 期限 3 秒で、処理は 18.5 秒後だった)。
+//
+// **期限を待っていたかどうかで分けない。** 待ちの責任は、期限の待ちの外にも
+// ある (新しい wait の job の marker で起こされて処理中に止まる、marker を取った
+// 直後に止まる、など)。止めるたびに delayed を 1 回読むだけで、空なら何もしない。
+//
+// 置き直す形は BullMQ の addDelayMarkerIfNeeded と同じ (score は次の期限、
+// member は "1")。ただし score は ms に切り捨てる (差は 1ms 未満)。
+//
+// **marker を待っている自分の dispatcher が抜けてから置く。** BZPOPMIN は marker
+// を wake key より先に見るので、置いた marker を止まる途中の自分の dispatcher
+// に取られる。待つのはそれだけで、実行中の handler の完了は待たない (Drain は
+// handler が終わるまで返らず、その間に期限が来てしまう)。
+//
+// Best-effort, like wakeDispatchers: Stop must not fail because Redis is
+// gone. Without the marker the other Workers still promote the job once
+// their idle wait runs out.
+func (w *Worker) handoffDelayedWait() {
+	if w.rdb == nil {
+		return
+	}
+	w.markerMu.Lock()
+	for w.markerWaiters > 0 {
+		w.markerIdle.Wait()
+	}
+	w.markerMu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	next, err := w.rdb.ZRangeWithScores(ctx, w.keys.delayed, 0, 0).Result()
+	if err != nil || len(next) == 0 {
+		return
+	}
+	// delayed の score は「期限の ms * 0x1000 + 同じ ms の中の順番」。
+	nextTs := int64(next[0].Score) / 0x1000
+	_ = w.rdb.ZAdd(ctx, w.keys.marker, redis.Z{Score: float64(nextTs), Member: "1"}).Err()
 }
 
 // dropWakeKey removes this Worker's private wake key once every
@@ -691,7 +746,7 @@ func (w *Worker) sleep(d time.Duration) bool {
 // pending read when the parent context is cancelled, so a cancelled
 // runCtx alone leaves the dispatcher parked until the timeout expires
 // (measured: 736ms at a 1s ceiling, 7.78s at 8s). Worker.Stop therefore
-// nudges the marker key — see wakeMarkerWaiters. An earlier version of
+// nudges its private wake key — see wakeDispatchers. An earlier version of
 // this comment claimed the opposite; it was wrong.
 //
 // A timeout (redis.Nil) and a cancelled runCtx are not errors: the
@@ -716,7 +771,22 @@ func (w *Worker) awaitMarker(timeout time.Duration) error {
 	// 起こしを同じキューの別 worker に横取りされる。wakeKey はこの Worker
 	// インスタンス専用なので、押した分だけ確実にこの worker が起きる。
 	// marker を先に置くのは、仕事がある場合をそちらで拾わせるため。
+	// 止まり始めた後は新しく待たない。handoffDelayedWait は、ここで数えた
+	// dispatcher が抜けるのを待ってから marker を置く。
+	w.markerMu.Lock()
+	if w.runCtx.Err() != nil {
+		w.markerMu.Unlock()
+		return nil
+	}
+	w.markerWaiters++
+	w.markerMu.Unlock()
 	err := w.rdb.BZPopMin(w.runCtx, timeout, w.keys.marker, w.wakeKey).Err()
+	w.markerMu.Lock()
+	w.markerWaiters--
+	if w.markerWaiters == 0 {
+		w.markerIdle.Broadcast()
+	}
+	w.markerMu.Unlock()
 	if err == nil || errors.Is(err, redis.Nil) || w.runCtx.Err() != nil {
 		return nil
 	}
