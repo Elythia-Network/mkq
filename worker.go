@@ -120,7 +120,7 @@ type Worker struct {
 
 	// markerMu guards markerWaiters, the number of dispatchers inside
 	// BZPopMin on the marker key. markerIdle is signalled when it drops to
-	// zero. handoffDelayedWait waits on it; see there.
+	// zero. handoffMarker waits on it; see there.
 	markerMu      sync.Mutex
 	markerIdle    sync.Cond
 	markerWaiters int
@@ -328,7 +328,7 @@ func (w *Worker) beginShutdown() {
 		w.runCancel()
 		w.wakeDispatchers()
 		go func() {
-			w.handoffDelayedWait()
+			w.handoffMarker()
 			w.run.Wait()
 			// 全部戻ったら job ctx tree も畳む。Drain が成功した場合は
 			// ここを通らないと cancel node が worker の寿命ぶん残る。
@@ -444,9 +444,9 @@ func (w *Worker) wakeDispatchers() {
 	_ = w.rdb.ZAdd(ctx, w.wakeKey, members...).Err()
 }
 
-// handoffDelayedWait re-adds the delay marker on shutdown when a delayed
-// job is queued, so that a dispatcher of another Worker on the same queue
-// takes over the wait for it.
+// handoffMarker re-adds the queue's marker on shutdown, so that a
+// dispatcher of another Worker on the same queue takes over the work this
+// Worker's dispatchers were about to pick up or wait for.
 //
 // **期限を待つ dispatcher は、キュー全体で 1 つしかいないことがある (#150)。**
 // delayed job を積んだときの marker は、BZPOPMIN で 1 つの dispatcher だけが
@@ -455,12 +455,21 @@ func (w *Worker) wakeDispatchers() {
 // 誰も promote せず、残りが待機の間隔を待ち終えるまで遅れる (待機の間隔 20 秒、
 // 期限 3 秒で、処理は 18.5 秒後だった)。
 //
-// **期限を待っていたかどうかで分けない。** 待ちの責任は、期限の待ちの外にも
-// ある (新しい wait の job の marker で起こされて処理中に止まる、marker を取った
-// 直後に止まる、など)。止めるたびに delayed を 1 回読むだけで、空なら何もしない。
+// **wait の job の marker も同じ (#150)。** runCancel から wake key への push が
+// 届くまでの間に job が積まれると、止まる途中の dispatcher がその marker を取って
+// 捨てる。job は wait に残り、他の Worker は待機の間隔まで気付かない。
 //
-// 置き直す形は BullMQ の addDelayMarkerIfNeeded と同じ (score は次の期限、
-// member は "1")。ただし score は ms に切り捨てる (差は 1ms 未満)。
+// **待っていたかどうかで分けない。** 待ちの責任は、期限の待ちの外にもある
+// (新しい wait の job の marker で起こされて処理中に止まる、marker を取った
+// 直後に止まる、など)。止めるたびに 1 往復で読むだけで、空なら何もしない。
+//
+// 置く形は BullMQ の resume (pause-7.lua) に合わせる。wait か prioritized に
+// job があれば score 0 の "0" を置く (addBaseMarkerIfNeeded と同じく、paused か
+// concurrency の上限に達しているときは置かない)。delayed があれば
+// addDelayMarkerIfNeeded と同じく次の期限を score に "1" を置く。ただし score は
+// ms に切り捨てる (差は 1ms 未満)。resume は片方しか置かないが、ここでは両方を
+// 置く。起きる dispatcher が 1 つ増えるだけで害は無く、期限を moveToActive の
+// 戻り値に頼らずに伝えられる。
 //
 // **marker を待っている自分の dispatcher が抜けてから置く。** BZPOPMIN は marker
 // を wake key より先に見るので、置いた marker を止まる途中の自分の dispatcher
@@ -468,9 +477,9 @@ func (w *Worker) wakeDispatchers() {
 // handler が終わるまで返らず、その間に期限が来てしまう)。
 //
 // Best-effort, like wakeDispatchers: Stop must not fail because Redis is
-// gone. Without the marker the other Workers still promote the job once
+// gone. Without the marker the other Workers still pick the jobs up once
 // their idle wait runs out.
-func (w *Worker) handoffDelayedWait() {
+func (w *Worker) handoffMarker() {
 	if w.rdb == nil {
 		return
 	}
@@ -481,13 +490,49 @@ func (w *Worker) handoffDelayedWait() {
 	w.markerMu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	next, err := w.rdb.ZRangeWithScores(ctx, w.keys.delayed, 0, 0).Result()
-	if err != nil || len(next) == 0 {
+	pipe := w.rdb.Pipeline()
+	nextDelayed := pipe.ZRangeWithScores(ctx, w.keys.delayed, 0, 0)
+	waitLen := pipe.LLen(ctx, w.keys.wait)
+	prioritizedLen := pipe.ZCard(ctx, w.keys.prioritized)
+	meta := pipe.HMGet(ctx, w.keys.meta, "paused", "concurrency")
+	activeLen := pipe.LLen(ctx, w.keys.active)
+	if _, err := pipe.Exec(ctx); err != nil {
 		return
 	}
-	// delayed の score は「期限の ms * 0x1000 + 同じ ms の中の順番」。
-	nextTs := int64(next[0].Score) / 0x1000
-	_ = w.rdb.ZAdd(ctx, w.keys.marker, redis.Z{Score: float64(nextTs), Member: "1"}).Err()
+	var members []redis.Z
+	if waitLen.Val()+prioritizedLen.Val() > 0 && !pausedOrMaxed(meta.Val(), activeLen.Val()) {
+		members = append(members, redis.Z{Score: 0, Member: "0"})
+	}
+	if next := nextDelayed.Val(); len(next) > 0 {
+		// delayed の score は「期限の ms * 0x1000 + 同じ ms の中の順番」。
+		nextTs := int64(next[0].Score) / 0x1000
+		members = append(members, redis.Z{Score: float64(nextTs), Member: "1"})
+	}
+	if len(members) == 0 {
+		return
+	}
+	_ = w.rdb.ZAdd(ctx, w.keys.marker, members...).Err()
+}
+
+// pausedOrMaxed mirrors BullMQ's isQueuePausedOrMaxed: meta holds the
+// HMGET of "paused" and "concurrency" on the queue's meta key.
+func pausedOrMaxed(meta []any, active int64) bool {
+	if len(meta) > 0 && meta[0] != nil {
+		return true
+	}
+	if len(meta) < 2 || meta[1] == nil {
+		return false
+	}
+	s, ok := meta[1].(string)
+	if !ok {
+		return false
+	}
+	// Lua の tonumber に寄せて小数も読む。BullMQ が書くのは整数だけ。
+	limit, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return false
+	}
+	return float64(active) >= limit
 }
 
 // dropWakeKey removes this Worker's private wake key once every
@@ -778,7 +823,7 @@ func (w *Worker) awaitMarker(timeout time.Duration) error {
 	// 起こしを同じキューの別 worker に横取りされる。wakeKey はこの Worker
 	// インスタンス専用なので、押した分だけ確実にこの worker が起きる。
 	// marker を先に置くのは、仕事がある場合をそちらで拾わせるため。
-	// 止まり始めた後は新しく待たない。handoffDelayedWait は、ここで数えた
+	// 止まり始めた後は新しく待たない。handoffMarker は、ここで数えた
 	// dispatcher が抜けるのを待ってから marker を置く。
 	w.markerMu.Lock()
 	if w.runCtx.Err() != nil {
