@@ -6,6 +6,25 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Only the dispatcher that took the delay marker waits for a delayed
+  job's due time. Every dispatcher that had seen the deadline in its
+  dequeue used to wait for it, so one delayed job woke all of them at
+  once (16 with 4 Workers at concurrency 4). The others now skip the
+  due time and wait once for the longer of 30 seconds and
+  `IdlePollInterval`. The holder puts the marker back when it takes another
+  job, and `Process` and `Queue.Resume` put it back too. When no
+  dispatcher holds the marker (the holder exited without Stop or Drain
+  or could not put the marker back, BullMQ resumed the queue or took
+  the marker, or the queue hit its global concurrency limit), a due job
+  can wait up to the longer of 30 seconds and `IdlePollInterval`. A
+  marker added while another dispatcher holds one (a delayed job added
+  or retried, a Worker started, the queue resumed) can add one more
+  waiter, which stays until the delayed set empties or another waiter
+  takes its hand-off marker. The waiters never outnumber those of
+  before (#150).
+
 ### Fixed
 
 - A pending delayed job no longer cuts the marker wait below
@@ -15,12 +34,13 @@ project adheres to [Semantic Versioning](https://semver.org/).
   60s interval). The cap is now the longer of 30 seconds and
   `IdlePollInterval` (#150).
 - Stopping or draining a Worker no longer leaves a due delayed job
-  waiting for the other Workers' idle poll. Only the dispatcher that
-  took the delay marker waits for the deadline, so when it stopped, the
-  rest slept until `IdlePollInterval` ran out (18.5s for a 3s delay at a
-  20s interval). Shutdown now re-adds the delay marker the way BullMQ's
-  `addDelayMarkerIfNeeded` does, once its own dispatchers have left the
-  marker wait, without waiting for running handlers (#150).
+  waiting for the other Workers' idle poll. The deadline may have been
+  known only to the dispatchers of the stopping Worker, so when they
+  stopped, the rest slept until `IdlePollInterval` ran out (18.5s for
+  a 3s delay at a 20s interval). Shutdown now re-adds the delay marker
+  the way BullMQ's `addDelayMarkerIfNeeded` does, once its own
+  dispatchers have left the marker wait, without waiting for running
+  handlers (#150).
 - Shutdown also hands off a job that was waiting without a marker. A
   dispatcher that was stopping could take the marker of a job added
   just then and drop it, leaving the job to the other Workers' idle
