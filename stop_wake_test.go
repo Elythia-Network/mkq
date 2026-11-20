@@ -230,3 +230,94 @@ func TestDrain_HandsOffDelayedWaitBeforeHandlersFinish(t *testing.T) {
 		t.Fatalf("期限の %v を 5 秒過ぎても処理されない。期限の待ちの引き継ぎが handler の完了を待っている", delay)
 	}
 }
+
+// **止まる途中の dispatcher が取った wait の job の marker を、別の worker へ
+// 引き継ぐこと (#150)。**
+//
+// 止まり始めてから wake key への push が届くまでの間に job が積まれると、止まる
+// 途中の dispatcher がその marker を取って捨てる。job は wait に残り、他の worker
+// は待機の間隔 (ここでは 20 秒) まで気付かない。窓は 1 往復ほどで狙って開けられ
+// ないので、pause の間に積んで marker の無い job を作り、同じ状態を再現する。
+func TestStop_HandsOffWaitingJob(t *testing.T) {
+	cases := []struct {
+		name string
+		opts []mkq.AddOption
+	}{
+		{"wait", nil},
+		{"prioritized", []mkq.AddOption{mkq.WithPriority(1)}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prefix := uniquePrefix(t)
+			c := newClient(t, prefix)
+			queue := mkq.Define[testPayload](c, "deliver")
+
+			done := make(chan string, 1)
+			handler := func(name string) func(context.Context, *mkq.Job[testPayload]) (any, error) {
+				return func(context.Context, *mkq.Job[testPayload]) (any, error) {
+					select {
+					case done <- name:
+					default:
+					}
+					return nil, nil
+				}
+			}
+			opts := []mkq.WorkerOption{mkq.WithConcurrency(1), mkq.WithIdlePollInterval(20 * time.Second)}
+
+			victim, err := mkq.Process(queue, handler("victim"), opts...)
+			require.NoError(t, err)
+			survivor, err := mkq.Process(queue, handler("survivor"), opts...)
+			require.NoError(t, err)
+			defer stopWorker(t, survivor)
+			time.Sleep(time.Second)
+
+			ctx := context.Background()
+			require.NoError(t, queue.Pause(ctx))
+			_, err = queue.Add(ctx, testPayload{Inbox: "waiting"}, tc.opts...)
+			require.NoError(t, err)
+			// resume は marker を置くので使わず、paused の印だけを消す。
+			rdb := rawClient(t)
+			require.NoError(t, rdb.HDel(ctx, prefix+":deliver:meta", "paused").Err())
+			n, err := rdb.ZCard(ctx, prefix+":deliver:marker").Result()
+			require.NoError(t, err)
+			require.Zero(t, n, "the job must have no marker before the stop")
+
+			start := time.Now()
+			stopWorker(t, victim)
+
+			select {
+			case name := <-done:
+				assert.Equal(t, "survivor", name)
+				assert.Less(t, time.Since(start), 3*time.Second)
+			case <-time.After(8 * time.Second):
+				t.Fatal("the waiting job was not handed off to the surviving worker")
+			}
+		})
+	}
+}
+
+// **paused のキューでは、止めても wait の job の marker を置かないこと。**
+//
+// BullMQ の addBaseMarkerIfNeeded と同じく、paused か concurrency の上限に
+// 達しているときは置かない。置くと、他の worker が起きて空振りする。
+func TestStop_DoesNotMarkWaitingJobOfPausedQueue(t *testing.T) {
+	prefix := uniquePrefix(t)
+	c := newClient(t, prefix)
+	queue := mkq.Define[testPayload](c, "deliver")
+
+	worker, err := mkq.Process(queue, func(context.Context, *mkq.Job[testPayload]) (any, error) {
+		return nil, nil
+	}, mkq.WithConcurrency(1), mkq.WithIdlePollInterval(20*time.Second))
+	require.NoError(t, err)
+	time.Sleep(time.Second)
+
+	ctx := context.Background()
+	require.NoError(t, queue.Pause(ctx))
+	_, err = queue.Add(ctx, testPayload{Inbox: "waiting"})
+	require.NoError(t, err)
+	stopWorker(t, worker)
+
+	rdb := rawClient(t)
+	_, err = rdb.ZScore(ctx, prefix+":deliver:marker", "0").Result()
+	assert.ErrorIs(t, err, redis.Nil, "a paused queue must not get a marker for its waiting job")
+}

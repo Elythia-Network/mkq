@@ -21,6 +21,12 @@ project adheres to [Semantic Versioning](https://semver.org/).
   20s interval). Shutdown now re-adds the delay marker the way BullMQ's
   `addDelayMarkerIfNeeded` does, once its own dispatchers have left the
   marker wait, without waiting for running handlers (#150).
+- Shutdown also hands off a job that was waiting without a marker. A
+  dispatcher that was stopping could take the marker of a job added
+  just then and drop it, leaving the job to the other Workers' idle
+  poll. Shutdown now adds the marker for waiting jobs too, unless the
+  queue is paused or at its concurrency limit, as BullMQ's
+  `addBaseMarkerIfNeeded` does (#150).
 
 ## [1.5.2] - 2026-11-19
 
