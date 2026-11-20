@@ -6,6 +6,16 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Stopping or draining a Worker no longer leaves a due delayed job
+  waiting for the other Workers' idle poll. Only the dispatcher that
+  took the delay marker waits for the deadline, so when it stopped, the
+  rest slept until `IdlePollInterval` ran out (18.5s for a 3s delay at a
+  20s interval). Shutdown now re-adds the delay marker the way BullMQ's
+  `addDelayMarkerIfNeeded` does, once its own dispatchers have left the
+  marker wait, without waiting for running handlers (#150).
+
 ## [1.5.2] - 2026-11-19
 
 ### Changed

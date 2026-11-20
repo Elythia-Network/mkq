@@ -88,3 +88,145 @@ func TestStop_RemovesWakeKey(t *testing.T) {
 	require.NoError(t, err)
 	assert.Emptyf(t, keys, "wake key が残っている: %v", keys)
 }
+
+// **期限を待っていた worker を止めても、遅延ジョブが期限どおりに処理されること (#150)。**
+//
+// delayed job を積んだときの marker は 1 つの dispatcher だけが取り、期限まで
+// 待つのはその dispatcher だけになる。それが止まると、残りの worker は待機の
+// 間隔 (ここでは 20 秒) を待ち終えるまでジョブを promote しなかった。
+//
+// Redis は同じ key で待つクライアントを、待ち始めた順に起こす。先に起動した
+// first が marker を取って期限を待ち、second は待機の間隔で眠ったままになる。
+func TestStop_HandsOffDelayedWait(t *testing.T) {
+	prefix := uniquePrefix(t)
+	c := newClient(t, prefix)
+	queue := mkq.Define[testPayload](c, "deliver")
+
+	done := make(chan string, 1)
+	handler := func(name string) func(context.Context, *mkq.Job[testPayload]) (any, error) {
+		return func(context.Context, *mkq.Job[testPayload]) (any, error) {
+			select {
+			case done <- name:
+			default:
+			}
+			return nil, nil
+		}
+	}
+	opts := []mkq.WorkerOption{mkq.WithConcurrency(1), mkq.WithIdlePollInterval(20 * time.Second)}
+
+	first, err := mkq.Process(queue, handler("first"), opts...)
+	require.NoError(t, err)
+	time.Sleep(time.Second)
+	second, err := mkq.Process(queue, handler("second"), opts...)
+	require.NoError(t, err)
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = second.Stop(ctx)
+	}()
+	time.Sleep(time.Second)
+
+	const delay = 3 * time.Second
+	added := time.Now()
+	_, err = queue.Add(context.Background(), testPayload{Inbox: "soon"}, mkq.WithDelay(delay))
+	require.NoError(t, err)
+
+	// first が marker を取って期限の待ちに入るのを待ってから止める。
+	time.Sleep(time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	require.NoError(t, first.Stop(ctx))
+
+	select {
+	case name := <-done:
+		elapsed := time.Since(added)
+		assert.Equal(t, "second", name)
+		assert.Lessf(t, elapsed, delay+2*time.Second,
+			"期限の %v に対して %v 後に処理された。期限の待ちが引き継がれていない", delay, elapsed)
+		t.Logf("期限 %v の遅延ジョブを %v 後に処理", delay, elapsed.Round(time.Millisecond))
+	case <-time.After(delay + 5*time.Second):
+		t.Fatalf("期限の %v を 5 秒過ぎても処理されない。期限の待ちが引き継がれていない", delay)
+	}
+}
+
+// **止まる worker の handler が長引いても、期限の待ちの引き継ぎは遅れないこと (#150)。**
+//
+// Drain は実行中の handler が終わるまで返らない。引き継ぎを dispatcher が
+// すべて戻った後に置くと、その間に期限が来ても誰も promote しない。
+func TestDrain_HandsOffDelayedWaitBeforeHandlersFinish(t *testing.T) {
+	prefix := uniquePrefix(t)
+	c := newClient(t, prefix)
+	queue := mkq.Define[testPayload](c, "deliver")
+
+	release := make(chan struct{})
+	started := make(chan struct{})
+	done := make(chan string, 1)
+	handler := func(name string) func(context.Context, *mkq.Job[testPayload]) (any, error) {
+		return func(_ context.Context, job *mkq.Job[testPayload]) (any, error) {
+			if job.Data.Inbox == "block" {
+				close(started)
+				<-release
+				return nil, nil
+			}
+			select {
+			case done <- name:
+			default:
+			}
+			return nil, nil
+		}
+	}
+	opts := []mkq.WorkerOption{mkq.WithIdlePollInterval(20 * time.Second)}
+
+	// first の 1 つの dispatcher が block を処理し続け、もう 1 つが期限を待つ。
+	// moveToActive はジョブを取ると marker を置き直して次の dispatcher を起こす
+	// ので、block を積むと first のもう 1 つも起きて待ち直す。second はその後に
+	// 起動し、first の残りより後に待ち始めさせる。
+	first, err := mkq.Process(queue, handler("first"), append(opts, mkq.WithConcurrency(2))...)
+	require.NoError(t, err)
+	time.Sleep(time.Second)
+	_, err = queue.Add(context.Background(), testPayload{Inbox: "block"})
+	require.NoError(t, err)
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the blocking handler never started")
+	}
+	time.Sleep(time.Second)
+
+	second, err := mkq.Process(queue, handler("second"), append(opts, mkq.WithConcurrency(1))...)
+	require.NoError(t, err)
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = second.Stop(ctx)
+	}()
+	time.Sleep(time.Second)
+
+	const delay = 3 * time.Second
+	added := time.Now()
+	_, err = queue.Add(context.Background(), testPayload{Inbox: "soon"}, mkq.WithDelay(delay))
+	require.NoError(t, err)
+	time.Sleep(time.Second)
+
+	drained := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		drained <- first.Drain(ctx)
+	}()
+	defer func() {
+		close(release)
+		require.NoError(t, <-drained)
+	}()
+
+	select {
+	case name := <-done:
+		elapsed := time.Since(added)
+		assert.Equal(t, "second", name)
+		assert.Lessf(t, elapsed, delay+2*time.Second,
+			"期限の %v に対して %v 後に処理された。期限の待ちの引き継ぎが handler の完了を待っている", delay, elapsed)
+		t.Logf("期限 %v の遅延ジョブを %v 後に処理", delay, elapsed.Round(time.Millisecond))
+	case <-time.After(delay + 5*time.Second):
+		t.Fatalf("期限の %v を 5 秒過ぎても処理されない。期限の待ちの引き継ぎが handler の完了を待っている", delay)
+	}
+}
