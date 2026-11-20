@@ -8,6 +8,12 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- A pending delayed job no longer cuts the marker wait below
+  `IdlePollInterval`. The wait on the delayed path was capped at 30
+  seconds, so with a longer interval one far delayed job made every
+  dispatcher wake every 30 seconds instead (twice the commands at a
+  60s interval). The cap is now the longer of 30 seconds and
+  `IdlePollInterval` (#150).
 - Stopping or draining a Worker no longer leaves a due delayed job
   waiting for the other Workers' idle poll. Only the dispatcher that
   took the delay marker waits for the deadline, so when it stopped, the

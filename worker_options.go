@@ -68,6 +68,9 @@ func WithWorkerName(name string) WorkerOption {
 // dispatchers through a per-worker wake key, so it does not wait out
 // this timeout. Zero or a negative value means the default (100ms).
 //
+// While a delayed job is pending, a dispatcher instead waits until that
+// job is due, for at most the longer of this value and 30 seconds.
+//
 // A blocked BZPopMin holds one Redis connection per worker slot, so
 // WithConcurrency(N) callers should ensure their go-redis
 // UniversalOptions.PoolSize is >= N + a few; the default

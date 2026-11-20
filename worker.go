@@ -339,11 +339,14 @@ func (w *Worker) beginShutdown() {
 	})
 }
 
-// maxIdleWait caps how long an idle dispatcher parks on the marker key.
+// maxIdleWait caps how long an idle dispatcher parks on the marker key,
+// unless IdlePollInterval is longer, in which case that is the cap. The
+// same cap bounds the wait for a delayed job (#150).
 //
 // **上限があるのは marker を取り逃したときの保険。** push は Lua 側で行われる
 // ので通常は取りこぼさないが、Redis のフェイルオーバー等で欠けた場合はこの
-// 間隔で気づく。stalled-recovery (既定 30 秒) と同じ桁に置いてある。
+// 間隔 (IdlePollInterval の方が長ければ、そちら) で気づく。stalled-recovery
+// (既定 30 秒) と同じ桁に置いてある。
 const maxIdleWait = 30 * time.Second
 
 // markerWaitFloor is the shortest wait that awaitMarker can actually
@@ -695,9 +698,13 @@ func (w *Worker) dispatchLoop(handlerAny any) {
 			// 毎秒 10 回 tryOnce を撃ち続ける (worker 8 個で毎秒 549
 			// コマンド。空のキューなら 19)。marker 待ちなら新しい
 			// wait-list job は push で即座に起こせるので、刻む理由が無い。
-			if delay > maxIdleWait {
-				delay = maxIdleWait
-			}
+			//
+			// **上限は待機の間隔より短くしない (#150)。** 上限は marker を
+			// 取り逃したときの保険で、アイドルの経路と同じ役目なので、待機の
+			// 間隔を延ばした運用ではその長さに合わせる。30 秒のままだと、遠い
+			// delayed job が 1 件あるだけで、全 dispatcher の待ちが待機の間隔
+			// から 30 秒に縮んでいた。
+			delay = min(delay, max(maxIdleWait, w.cfg.idlePollInterval))
 			if !waitMarker(delay, delay) {
 				return
 			}
